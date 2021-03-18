@@ -51,7 +51,6 @@ func (s *Strategy) Register(w http.ResponseWriter, r *http.Request, f *registrat
 
 	if err := r.ParseForm(); err != nil {
 		return s.handleError(w, r, f.ID, "", nil, errors.WithStack(herodot.ErrBadRequest.WithDebug(err.Error()).WithReasonf("Unable to parse HTTP form request: %s", err.Error())))
-
 	}
 
 	var pid = r.Form.Get(s.SettingsStrategyID() + ".provider") // this can come from both url query and post body
