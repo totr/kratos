@@ -26,10 +26,6 @@ import (
 	"github.com/ory/kratos/x"
 )
 
-const (
-	SettingsPath = RouteBase + "/settings/connections"
-)
-
 var _ settings.Strategy = new(Strategy)
 var UnknownConnectionValidationError = &jsonschema.ValidationError{
 	Message: "can not unlink non-existing OpenID Connect connection", InstancePtr: "#/"}
@@ -141,7 +137,7 @@ func (s *Strategy) PopulateSettingsMethod(r *http.Request, id *identity.Identity
 	}
 
 	f := container.New(urlx.CopyWithQuery(urlx.AppendPaths(
-		s.d.Config(r.Context()).SelfPublicURL(r), SettingsPath), url.Values{"flow": {sr.ID.String()}}).String())
+		s.d.Config(r.Context()).SelfPublicURL(r), settings.RouteSubmitFlow), url.Values{"flow": {sr.ID.String()}}).String())
 	f.SetCSRF(s.d.GenerateCSRFToken(r))
 
 	for _, l := range linkable {
@@ -151,12 +147,6 @@ func (s *Strategy) PopulateSettingsMethod(r *http.Request, id *identity.Identity
 	for _, l := range linked {
 		f.GetNodes().Append(NewUnlinkNode(l.Config().ID))
 	}
-
-	panic(`
-	sr.Methods[s.SettingsStrategyID()] = &settings.FlowMethod{
-		Method: s.SettingsStrategyID(),
-		Config: &settings.FlowMethodConfig{FlowMethodConfigurator: NewFlowMethod(f)},
-	}`)
 
 	return nil
 }

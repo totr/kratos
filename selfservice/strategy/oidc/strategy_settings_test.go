@@ -555,7 +555,7 @@ func TestPopulateSettingsMethod(t *testing.T) {
 		require.NoError(t, reg.PrivilegedIdentityPool().CreateIdentity(context.Background(), i))
 		req := &settings.Flow{Type: flow.TypeAPI, ID: x.NewUUID(), UI: container.New("")}
 		require.NoError(t, ns(t, reg).PopulateSettingsMethod(new(http.Request), i, req))
-		require.Nil(t, req.UI.Nodes)
+		require.Empty(t, req.UI.Nodes)
 	})
 
 	for k, tc := range []struct {
