@@ -1,11 +1,17 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package node_test
 
 import (
 	"bytes"
+	"context"
 	"embed"
 	"encoding/json"
 	"path/filepath"
 	"testing"
+
+	"github.com/ory/kratos/text"
 
 	"github.com/ory/x/assertx"
 
@@ -13,7 +19,7 @@ import (
 
 	"github.com/ory/kratos/ui/container"
 
-	"github.com/bxcodec/faker/v3"
+	"github.com/go-faker/faker/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -28,13 +34,14 @@ func init() {
 
 //go:embed fixtures/sort/*
 var sortFixtures embed.FS
+var ctx = context.Background()
 
 func TestNodesSort(t *testing.T) {
 	// use a schema compiler that disables identifiers
 	schemaCompiler := jsonschema.NewCompiler()
 	schemaPath := "fixtures/identity.schema.json"
 
-	f, err := container.NewFromJSONSchema("/foo", node.DefaultGroup, schemaPath, "", schemaCompiler)
+	f, err := container.NewFromJSONSchema(ctx, "/foo", node.DefaultGroup, schemaPath, "", schemaCompiler)
 	require.NoError(t, err)
 
 	f.UpdateNodeValuesFromJSON(json.RawMessage(`{}`), "traits", node.DefaultGroup)
@@ -47,19 +54,19 @@ func TestNodesSort(t *testing.T) {
 		"1.json": {
 			node.SortUseOrder([]string{"password_identifier"}),
 			node.SortUpdateOrder(node.PasswordLoginOrder),
-			node.SortByGroups([]node.Group{
+			node.SortByGroups([]node.UiNodeGroup{
 				node.DefaultGroup,
 				node.ProfileGroup,
 				node.OpenIDConnectGroup,
 				node.PasswordGroup,
-				node.RecoveryLinkGroup,
-				node.VerificationLinkGroup,
+				node.LinkGroup,
+				node.LinkGroup,
 			}),
 		},
 		"2.json": {
 			node.SortBySchema(filepath.Join("fixtures/sort/schema", "2.json")),
 			node.SortUpdateOrder(node.PasswordLoginOrder),
-			node.SortByGroups([]node.Group{
+			node.SortByGroups([]node.UiNodeGroup{
 				node.DefaultGroup,
 				node.OpenIDConnectGroup,
 				node.PasswordGroup,
@@ -67,7 +74,7 @@ func TestNodesSort(t *testing.T) {
 		},
 		"3.json": {
 			node.SortBySchema(filepath.Join("fixtures/sort/schema", "3.json")),
-			node.SortByGroups([]node.Group{
+			node.SortByGroups([]node.UiNodeGroup{
 				node.DefaultGroup,
 				node.OpenIDConnectGroup,
 				node.PasswordGroup,
@@ -75,7 +82,7 @@ func TestNodesSort(t *testing.T) {
 		},
 		"4.json": {
 			node.SortBySchema(filepath.Join("fixtures/sort/schema", "4.json")),
-			node.SortByGroups([]node.Group{
+			node.SortByGroups([]node.UiNodeGroup{
 				node.DefaultGroup,
 				node.ProfileGroup,
 				node.PasswordGroup,
@@ -119,7 +126,7 @@ func TestNodesSort(t *testing.T) {
 			require.NoError(t, json.NewDecoder(fi).Decode(&nodes))
 			require.NotEmpty(t, nodes)
 
-			require.NoError(t, nodes.SortBySchema(options[in.Name()]...))
+			require.NoError(t, nodes.SortBySchema(ctx, options[in.Name()]...))
 
 			fe, err := sortFixtures.ReadFile(filepath.Join("fixtures/sort/expected", in.Name()))
 			require.NoError(t, err)
@@ -187,4 +194,65 @@ func TestNodeJSON(t *testing.T) {
 		var n node.Node
 		require.EqualError(t, json.NewDecoder(bytes.NewReader(json.RawMessage(`{"type": "foo"}`))).Decode(&n), "unexpected node type: foo")
 	})
+}
+
+func TestMatchesNode(t *testing.T) {
+	// Test when ID is different
+	node1 := &node.Node{Type: node.Input, Group: node.PasswordGroup, Attributes: &node.InputAttributes{Name: "foo"}}
+	node2 := &node.Node{Type: node.Input, Group: node.PasswordGroup, Attributes: &node.InputAttributes{Name: "bar"}}
+	assert.False(t, node1.Matches(node2))
+
+	// Test when Type is different
+	node1 = &node.Node{Type: node.Input, Group: node.PasswordGroup, Attributes: &node.InputAttributes{Name: "foo"}}
+	node2 = &node.Node{Type: node.Text, Group: node.PasswordGroup, Attributes: &node.InputAttributes{Name: "foo"}}
+	assert.False(t, node1.Matches(node2))
+
+	// Test when Group is different
+	node1 = &node.Node{Type: node.Input, Group: node.PasswordGroup, Attributes: &node.InputAttributes{Name: "foo"}}
+	node2 = &node.Node{Type: node.Input, Group: node.OpenIDConnectGroup, Attributes: &node.InputAttributes{Name: "foo"}}
+	assert.False(t, node1.Matches(node2))
+
+	// Test when all fields are the same
+	node1 = &node.Node{Type: node.Input, Group: node.PasswordGroup, Attributes: &node.InputAttributes{Name: "foo"}}
+	node2 = &node.Node{Type: node.Input, Group: node.PasswordGroup, Attributes: &node.InputAttributes{Name: "foo"}}
+	assert.True(t, node1.Matches(node2))
+}
+
+func TestRemoveMatchingNodes(t *testing.T) {
+	nodes := node.Nodes{
+		&node.Node{Type: node.Input, Group: node.PasswordGroup, Attributes: &node.InputAttributes{Name: "foo"}},
+		&node.Node{Type: node.Input, Group: node.PasswordGroup, Attributes: &node.InputAttributes{Name: "bar"}},
+		&node.Node{Type: node.Input, Group: node.PasswordGroup, Attributes: &node.InputAttributes{Name: "baz"}},
+	}
+
+	// Test when node to remove is present
+	nodeToRemove := &node.Node{Type: node.Input, Group: node.PasswordGroup, Attributes: &node.InputAttributes{Name: "bar"}}
+	nodes.RemoveMatching(nodeToRemove)
+	assert.Len(t, nodes, 2)
+	for _, n := range nodes {
+		assert.NotEqual(t, nodeToRemove.ID(), n.ID())
+	}
+
+	// Test when node to remove is not present
+	nodeToRemove = &node.Node{Type: node.Input, Group: node.PasswordGroup, Attributes: &node.InputAttributes{Name: "qux"}}
+	nodes.RemoveMatching(nodeToRemove)
+	assert.Len(t, nodes, 2) // length should remain the same
+
+	// Test when node to remove is present
+	nodeToRemove = &node.Node{Type: node.Input, Group: node.PasswordGroup, Attributes: &node.InputAttributes{Name: "baz"}}
+	ui := &container.Container{
+		Nodes: nodes,
+	}
+
+	ui.GetNodes().RemoveMatching(nodeToRemove)
+	assert.Len(t, *ui.GetNodes(), 1)
+	for _, n := range *ui.GetNodes() {
+		assert.NotEqual(t, "bar", n.ID())
+		assert.NotEqual(t, "baz", n.ID())
+	}
+
+	ui.Nodes.Append(node.NewInputField("method", "foo", "bar", node.InputAttributeTypeSubmit).WithMetaLabel(text.NewInfoNodeLabelContinue()))
+	assert.NotNil(t, ui.Nodes.Find("method"))
+	ui.GetNodes().RemoveMatching(node.NewInputField("method", "foo", "bar", node.InputAttributeTypeSubmit))
+	assert.Nil(t, ui.Nodes.Find("method"))
 }

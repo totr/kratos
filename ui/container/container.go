@@ -1,6 +1,10 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package container
 
 import (
+	"context"
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
@@ -67,7 +71,7 @@ func New(action string) *Container {
 
 // NewFromHTTPRequest creates a new Container and populates fields by parsing the HTTP Request body.
 // A jsonSchemaRef needs to be added to allow HTTP Form Post Body parsing.
-func NewFromHTTPRequest(r *http.Request, group node.Group, action string, compiler decoderx.HTTPDecoderOption) (*Container, error) {
+func NewFromHTTPRequest(r *http.Request, group node.UiNodeGroup, action string, compiler decoderx.HTTPDecoderOption) (*Container, error) {
 	c := New(action)
 	raw := json.RawMessage(`{}`)
 	if err := decoder.Decode(r, &raw, compiler); err != nil {
@@ -81,17 +85,28 @@ func NewFromHTTPRequest(r *http.Request, group node.Group, action string, compil
 }
 
 // NewFromJSON creates a UI Container based on the provided JSON struct.
-func NewFromJSON(action string, group node.Group, raw json.RawMessage, prefix string) *Container {
+func NewFromJSON(action string, group node.UiNodeGroup, raw json.RawMessage, prefix string) *Container {
 	c := New(action)
 	c.UpdateNodeValuesFromJSON(raw, prefix, group)
 	return c
 }
 
+// NewFromStruct creates a UI Container based on serialized contents of the provided struct.
+func NewFromStruct(action string, group node.UiNodeGroup, v interface{}, prefix string) (*Container, error) {
+	c := New(action)
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	c.UpdateNodeValuesFromJSON(data, prefix, group)
+	return c, nil
+}
+
 // NewFromJSONSchema creates a new Container and populates the fields
 // using the provided JSON Schema.
-func NewFromJSONSchema(action string, group node.Group, jsonSchemaRef, prefix string, compiler *jsonschema.Compiler) (*Container, error) {
+func NewFromJSONSchema(ctx context.Context, action string, group node.UiNodeGroup, jsonSchemaRef, prefix string, compiler *jsonschema.Compiler) (*Container, error) {
 	c := New(action)
-	nodes, err := NodesFromJSONSchema(group, jsonSchemaRef, prefix, compiler)
+	nodes, err := NodesFromJSONSchema(ctx, group, jsonSchemaRef, prefix, compiler)
 	if err != nil {
 		return nil, err
 	}
@@ -100,8 +115,8 @@ func NewFromJSONSchema(action string, group node.Group, jsonSchemaRef, prefix st
 	return c, nil
 }
 
-func NodesFromJSONSchema(group node.Group, jsonSchemaRef, prefix string, compiler *jsonschema.Compiler) (node.Nodes, error) {
-	paths, err := jsonschemax.ListPaths(jsonSchemaRef, compiler)
+func NodesFromJSONSchema(ctx context.Context, group node.UiNodeGroup, jsonSchemaRef, prefix string, compiler *jsonschema.Compiler) (node.Nodes, error) {
+	paths, err := jsonschemax.ListPaths(ctx, jsonSchemaRef, compiler)
 	if err != nil {
 		return nil, err
 	}
@@ -123,8 +138,8 @@ func (c *Container) GetNodes() *node.Nodes {
 	return &c.Nodes
 }
 
-func (c *Container) SortNodes(opts ...node.SortOption) error {
-	return c.Nodes.SortBySchema(opts...)
+func (c *Container) SortNodes(ctx context.Context, opts ...node.SortOption) error {
+	return c.Nodes.SortBySchema(ctx, opts...)
 }
 
 // ResetMessages resets the container's own and its node's messages.
@@ -149,7 +164,7 @@ func (c *Container) Reset(exclude ...string) {
 // formUI Container, the error is returned.
 //
 // This method DOES NOT touch the values of the node values/names, only its errors.
-func (c *Container) ParseError(group node.Group, err error) error {
+func (c *Container) ParseError(group node.UiNodeGroup, err error) error {
 	if e := richError(nil); errors.As(err, &e) {
 		if e.StatusCode() == http.StatusBadRequest {
 			c.AddMessage(group, text.NewValidationErrorGeneric(e.Reason()))
@@ -175,10 +190,10 @@ func (c *Container) ParseError(group node.Group, err error) error {
 		default:
 			// The pointer can be ignored because if there is an error, we'll just use
 			// the empty field (global error).
-			var causes = e.Causes
+			causes := e.Causes
 			if len(e.Causes) == 0 {
 				pointer, _ := jsonschemax.JSONPointerToDotNotation(e.InstancePtr)
-				c.AddMessage(group, text.NewValidationErrorGeneric(e.Message), pointer)
+				c.AddMessage(group, translateValidationError(e), pointer)
 				return nil
 			}
 
@@ -189,12 +204,80 @@ func (c *Container) ParseError(group node.Group, err error) error {
 			}
 		}
 		return nil
+	} else if e := new(schema.ValidationListError); errors.As(err, &e) {
+		for _, ee := range e.Validations {
+			if err := c.ParseError(group, ee); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	return err
 }
 
+func translateValidationError(err *jsonschema.ValidationError) *text.Message {
+	segments := strings.Split(err.SchemaPtr, "/")
+	switch segments[len(segments)-1] {
+	case "minLength":
+		minLength, actual := -1, -1
+		_, _ = fmt.Sscanf(err.Message, "length must be >= %d, but got %d", &minLength, &actual)
+		return text.NewErrorValidationMinLength(minLength, actual)
+	case "maxLength":
+		maxLength, actual := -1, -1
+		_, _ = fmt.Sscanf(err.Message, "length must be <= %d, but got %d", &maxLength, &actual)
+		return text.NewErrorValidationMaxLength(maxLength, actual)
+	case "pattern":
+		pattern := ""
+		_, _ = fmt.Sscanf(err.Message, "does not match pattern %q", &pattern)
+		return text.NewErrorValidationInvalidFormat(pattern)
+	case "minimum":
+		minimum, actual := -1.0, -1.0
+		_, _ = fmt.Sscanf(err.Message, "must be >= %v but found %v", &minimum, &actual)
+		return text.NewErrorValidationMinimum(minimum, actual)
+	case "exclusiveMinimum":
+		minimum, actual := -1.0, -1.0
+		_, _ = fmt.Sscanf(err.Message, "must be > %v but found %v", &minimum, &actual)
+		return text.NewErrorValidationExclusiveMinimum(minimum, actual)
+	case "maximum":
+		maximum, actual := -1.0, -1.0
+		_, _ = fmt.Sscanf(err.Message, "must be <= %v but found %v", &maximum, &actual)
+		return text.NewErrorValidationMaximum(maximum, actual)
+	case "exclusiveMaximum":
+		maximum, actual := -1.0, -1.0
+		_, _ = fmt.Sscanf(err.Message, "must be < %v but found %v", &maximum, &actual)
+		return text.NewErrorValidationExclusiveMaximum(maximum, actual)
+	case "multipleOf":
+		base, actual := -1.0, -1.0
+		_, _ = fmt.Sscanf(err.Message, "%v not multipleOf %v", &actual, &base)
+		return text.NewErrorValidationMultipleOf(base, actual)
+	case "maxItems":
+		maxItems, actual := -1, -1
+		_, _ = fmt.Sscanf(err.Message, "maximum %d items allowed, but found %d items", &maxItems, &actual)
+		return text.NewErrorValidationMaxItems(maxItems, actual)
+	case "minItems":
+		minItems, actual := -1, -1
+		_, _ = fmt.Sscanf(err.Message, "minimum %d items allowed, but found %d items", &minItems, &actual)
+		return text.NewErrorValidationMinItems(minItems, actual)
+	case "uniqueItems":
+		indexA, indexB := -1, -1
+		_, _ = fmt.Sscanf(err.Message, "items at index %d and %d are equal", &indexA, &indexB)
+		return text.NewErrorValidationUniqueItems(indexA, indexB)
+	case "type":
+		allowedTypes, actualType, _ := strings.Cut(strings.TrimPrefix(err.Message, "expected "), ", but got ")
+		return text.NewErrorValidationWrongType(strings.Split(allowedTypes, " or "), actualType)
+	case "const":
+		if err.Message != "const failed" {
+			expectedValue := strings.TrimPrefix(err.Message, "value must be ")
+			return text.NewErrorValidationConst(expectedValue)
+		}
+		return text.NewErrorValidationConstGeneric()
+	default:
+		return text.NewValidationErrorGeneric(err.Message)
+	}
+}
+
 // UpdateNodeValuesFromJSON sets the container's fields to the provided values.
-func (c *Container) UpdateNodeValuesFromJSON(raw json.RawMessage, prefix string, group node.Group) {
+func (c *Container) UpdateNodeValuesFromJSON(raw json.RawMessage, prefix string, group node.UiNodeGroup) {
 	for k, v := range jsonx.Flatten(raw) {
 		k = addPrefix(k, prefix, ".")
 
@@ -235,7 +318,7 @@ func (c *Container) SetValue(id string, n *node.Node) {
 
 // AddMessage adds the provided error, and if a non-empty names list is set,
 // adds the error on the corresponding field.
-func (c *Container) AddMessage(group node.Group, err *text.Message, setForFields ...string) {
+func (c *Container) AddMessage(group node.UiNodeGroup, err *text.Message, setForFields ...string) {
 	if len(stringslice.TrimSpaceEmptyFilter(setForFields)) == 0 {
 		c.Messages = append(c.Messages, *err)
 		return
@@ -256,6 +339,7 @@ func (c *Container) AddMessage(group node.Group, err *text.Message, setForFields
 func (c *Container) Scan(value interface{}) error {
 	return sqlxx.JSONScan(c, value)
 }
+
 func (c *Container) Value() (driver.Value, error) {
 	return sqlxx.JSONValue(c)
 }

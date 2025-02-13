@@ -1,3 +1,6 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package oidc
 
 import (
@@ -16,18 +19,20 @@ import (
 	"github.com/slack-go/slack"
 )
 
+var _ OAuth2Provider = (*ProviderSlack)(nil)
+
 type ProviderSlack struct {
 	config *Configuration
-	public *url.URL
+	reg    Dependencies
 }
 
 func NewProviderSlack(
 	config *Configuration,
-	public *url.URL,
-) *ProviderSlack {
+	reg Dependencies,
+) Provider {
 	return &ProviderSlack{
 		config: config,
-		public: public,
+		reg:    reg,
 	}
 }
 
@@ -35,7 +40,7 @@ func (d *ProviderSlack) Config() *Configuration {
 	return d.config
 }
 
-func (d *ProviderSlack) oauth2() *oauth2.Config {
+func (d *ProviderSlack) oauth2(ctx context.Context) *oauth2.Config {
 	return &oauth2.Config{
 		ClientID:     d.config.ClientID,
 		ClientSecret: d.config.ClientSecret,
@@ -45,20 +50,20 @@ func (d *ProviderSlack) oauth2() *oauth2.Config {
 			AuthURL:  "https://slack.com/oauth/authorize",
 			TokenURL: slack.APIURL + "oauth.access",
 		},
-		RedirectURL: d.config.Redir(d.public),
+		RedirectURL: d.config.Redir(d.reg.Config().OIDCRedirectURIBase(ctx)),
 		Scopes:      d.config.Scope,
 	}
 }
 
 func (d *ProviderSlack) OAuth2(ctx context.Context) (*oauth2.Config, error) {
-	return d.oauth2(), nil
+	return d.oauth2(ctx), nil
 }
 
 func (d *ProviderSlack) AuthCodeURLOptions(r ider) []oauth2.AuthCodeOption {
 	return []oauth2.AuthCodeOption{}
 }
 
-func (d *ProviderSlack) Claims(ctx context.Context, exchange *oauth2.Token) (*Claims, error) {
+func (d *ProviderSlack) Claims(ctx context.Context, exchange *oauth2.Token, query url.Values) (*Claims, error) {
 	grantedScopes := stringsx.Splitx(fmt.Sprintf("%s", exchange.Extra("scope")), ",")
 	for _, check := range d.Config().Scope {
 		if !stringslice.Has(grantedScopes, check) {

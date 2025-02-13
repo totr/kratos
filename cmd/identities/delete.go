@@ -1,3 +1,6 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package identities
 
 import (
@@ -11,45 +14,58 @@ import (
 )
 
 func NewDeleteCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "delete",
+		Short: "Delete resources",
+	}
+	cmd.AddCommand(NewDeleteIdentityCmd())
+	cliclient.RegisterClientFlags(cmd.PersistentFlags())
+	cmdx.RegisterFormatFlags(cmd.PersistentFlags())
+	return cmd
+}
+
+func NewDeleteIdentityCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "delete <id-0 [id-1 ...]>",
-		Short: "Delete identities by ID",
+		Use:   "identity id-0 [id-1] [id-2] [id-n]",
+		Short: "Delete one or more identities by their ID(s)",
 		Long: fmt.Sprintf(`This command deletes one or more identities by ID. To delete an identity by some selector, e.g. the recovery email address, use the list command in combination with jq.
 
-%s
-`, clihelpers.WarningJQIsComplicated),
+%s`, clihelpers.WarningJQIsComplicated),
 		Example: `To delete the identity with the recovery email address "foo@bar.com", run:
 
-	$ kratos identities delete $(kratos identities list --format json | jq -r 'map(select(.recovery_addresses[].value == "foo@bar.com")) | .[].id')`,
+	{{ .CommandPath }} $({{ .Root.Name }} list identities --format json | jq -r 'map(select(.recovery_addresses[].value == "foo@bar.com")) | .[].id')`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c := cliclient.NewClient(cmd)
+			c, err := cliclient.NewClient(cmd)
+			if err != nil {
+				return err
+			}
 
 			var (
-				deleted = make([]string, 0, len(args))
-				errs    []error
+				deleted = make([]cmdx.OutputIder, 0, len(args))
+				failed  = make(map[string]error)
 			)
 
 			for _, a := range args {
-				_, err := c.V0alpha2Api.AdminDeleteIdentity(cmd.Context(), a).Execute()
+				_, err := c.IdentityAPI.DeleteIdentity(cmd.Context(), a).Execute()
 				if err != nil {
-					errs = append(errs, err)
+					failed[a] = cmdx.PrintOpenAPIError(cmd, err)
 					continue
 				}
-				deleted = append(deleted, a)
+				deleted = append(deleted, cmdx.OutputIder(a))
 			}
 
-			for _, d := range deleted {
-				_, _ = fmt.Fprintln(cmd.OutOrStdout(), d)
+			if len(deleted) == 1 {
+				cmdx.PrintRow(cmd, &deleted[0])
+			} else if len(deleted) > 1 {
+				cmdx.PrintTable(cmd, &cmdx.OutputIderCollection{Items: deleted})
 			}
 
-			for _, err := range errs {
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%+v\n", err)
-			}
-
-			if len(errs) != 0 {
+			cmdx.PrintErrors(cmd, failed)
+			if len(failed) != 0 {
 				return cmdx.FailSilently(cmd)
 			}
+
 			return nil
 		},
 	}

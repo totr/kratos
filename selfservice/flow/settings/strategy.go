@@ -1,3 +1,6 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package settings
 
 import (
@@ -23,10 +26,10 @@ var pkgName = reflect.TypeOf(Strategies{}).PkgPath()
 
 type Strategy interface {
 	SettingsStrategyID() string
-	NodeGroup() node.Group
+	NodeGroup() node.UiNodeGroup
 	RegisterSettingsRoutes(*x.RouterPublic)
-	PopulateSettingsMethod(*http.Request, *identity.Identity, *Flow) error
-	Settings(w http.ResponseWriter, r *http.Request, f *Flow, s *session.Session) (*UpdateContext, error)
+	PopulateSettingsMethod(context.Context, *http.Request, *identity.Identity, *Flow) error
+	Settings(ctx context.Context, w http.ResponseWriter, r *http.Request, f *Flow, s *session.Session) (*UpdateContext, error)
 }
 
 type Strategies []Strategy

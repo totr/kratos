@@ -1,13 +1,18 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package settings
 
 import (
+	"context"
+
 	"github.com/ory/kratos/ui/node"
 )
 
-func sortNodes(n node.Nodes, schemaRef string) error {
-	return n.SortBySchema(
+func sortNodes(ctx context.Context, n node.Nodes, schemaRef string) error {
+	return n.SortBySchema(ctx,
 		node.SortBySchema(schemaRef),
-		node.SortByGroups([]node.Group{
+		node.SortByGroups([]node.UiNodeGroup{
 			node.DefaultGroup,
 			node.ProfileGroup,
 			node.PasswordGroup,
@@ -23,7 +28,7 @@ func sortNodes(n node.Nodes, schemaRef string) error {
 			node.LookupCodes,
 			node.LookupConfirm,
 
-			// Lookup
+			// WebAuthn
 			node.WebAuthnRemove,
 			node.WebAuthnRegisterDisplayName,
 			node.WebAuthnRegister,

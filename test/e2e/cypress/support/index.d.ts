@@ -1,4 +1,9 @@
-import { Session } from '@ory/kratos-client'
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
+import { Session as KratosSession } from "@ory/kratos-client"
+import { OryKratosConfiguration } from "../../shared/config"
+import { ConfigBuilder } from "./configHelpers"
 
 export interface MailMessage {
   fromAddress: string
@@ -6,6 +11,9 @@ export interface MailMessage {
   body: string
   subject: string
 }
+
+export type Strategy = "code" | "link"
+type app = "express" | "react"
 
 declare global {
   namespace Cypress {
@@ -18,16 +26,27 @@ declare global {
       deleteMail(options: { atLeast?: boolean }): Chainable<void>
 
       /**
+       * Adds end enables a WebAuth authenticator key.
+       */
+      addVirtualAuthenticator(): Chainable<any>
+
+      /**
        * Fetch the browser's Ory Session.
        *
        * @param opts
        */
       getSession(opts?: {
-        expectAal?: 'aal2' | 'aal1'
+        expectAal?: "aal2" | "aal1"
         expectMethods?: Array<
-          'password' | 'webauthn' | 'lookup_secret' | 'totp'
+          | "password"
+          | "webauthn"
+          | "lookup_secret"
+          | "totp"
+          | "code"
+          | "passkey"
         >
-      }): Chainable<Session>
+        token?: string
+      }): Chainable<KratosSession>
 
       /**
        * Expect that the browser has no valid Ory Kratos Cookie Session.
@@ -44,7 +63,7 @@ declare global {
         password: string
         expectSession?: boolean
         cookieUrl?: string
-      }): Chainable<Response<Session | undefined>>
+      }): Chainable<Response<KratosSession | undefined>>
 
       /**
        * Sign up a user
@@ -56,6 +75,19 @@ declare global {
         password: string
         query?: { [key: string]: string }
         fields?: { [key: string]: any }
+      }): Chainable<Response<void>>
+
+      /**
+       * Register a user with a code
+       *
+       * @param opts
+       */
+      registerWithCode(opts: {
+        email: string
+        code?: string
+        traits?: { [key: string]: any }
+        query?: { [key: string]: string }
+        expectedMailCount?: number
       }): Chainable<Response<void>>
 
       /**
@@ -77,10 +109,18 @@ declare global {
        *
        * @param opts
        */
-      getMail(opts?: { removeMail: boolean }): Chainable<MailMessage>
+      getMail(opts: {
+        removeMail?: boolean
+        expectedCount?: number
+        email?: string
+        subject?: string
+        body?: string
+      }): Chainable<MailMessage>
 
       performEmailVerification(opts?: {
         expect?: { email?: string; redirectTo?: string }
+        strategy?: Strategy
+        useLinkFromEmail?: boolean
       }): Chainable<void>
 
       /**
@@ -101,14 +141,88 @@ declare global {
         email: string
         password: string
         fields: { [key: string]: string }
-      }): Chainable<Session>
+      }): Chainable<KratosSession>
 
       /**
        * Submits a recovery flow via the API
        *
        * @param opts
        */
-      recoverApi(opts: { email: string }): Chainable<void>
+      recoverApi(opts: { email: string; returnTo?: string }): Chainable<void>
+
+      /**
+       * Submits a verification flow via the API
+       *
+       * @param opts
+       */
+      verificationApi(opts: {
+        email: string
+        returnTo?: string
+        strategy?: Strategy
+      }): Chainable<void>
+
+      /**
+       * Update the config file
+       *
+       * @param cb
+       */
+      updateConfigFile(cb: (arg: OryKratosConfiguration) => any): Chainable<any>
+
+      /**
+       * Submits a verification flow via the API
+       *
+       * @param opts
+       */
+      verificationApiExpired(opts: {
+        email: string
+        strategy?: Strategy
+        returnTo?: string
+      }): Chainable<void>
+
+      /**
+       *  Sets the hook.
+       *
+       * @param hooks
+       */
+      setupHooks(
+        flow:
+          | "registration"
+          | "login"
+          | "recovery"
+          | "verification"
+          | "settings",
+        phase: "before" | "after",
+        kind: "password" | "webauthn" | "oidc" | "code" | "passkey",
+        hooks: Array<{ hook: string; config?: any }>,
+      ): Chainable<void>
+
+      /**
+       *  Sets the post registration hook.
+       *
+       * @param hooks
+       */
+      setPostPasswordRegistrationHooks(
+        hooks: Array<{ hook: string; config?: any }>,
+      ): Chainable<void>
+
+      /**
+       * Sets the post code registration hook.
+       *
+       * @param hooks
+       */
+      setPostCodeRegistrationHooks(
+        hooks: Array<{ hook: string; config?: any }>,
+      ): Chainable<void>
+
+      /**
+       * Submits a verification flow via the Browser
+       *
+       * @param opts
+       */
+      verificationBrowser(opts: {
+        email: string
+        returnTo?: string
+      }): Chainable<void>
 
       /**
        * Changes the config so that the login flow lifespan is very short.
@@ -132,6 +246,23 @@ declare global {
        * Change the config so that `https://www.ory.sh/` is a allowed return to URL.
        */
       browserReturnUrlOry(): Chainable<void>
+
+      /**
+       * Change the courier recovery invalid and valid templates to remote base64 strings
+       */
+      remoteCourierRecoveryTemplates(): Chainable<void>
+
+      /**
+       * Resets the remote courier templates for the given template type to their default values
+       */
+      resetCourierTemplates(
+        type: "recovery_code" | "recovery" | "verification",
+      ): Chainable<void>
+
+      /**
+       * Change the courier recovery code invalid and valid templates to remote base64 strings
+       */
+      remoteCourierRecoveryCodeTemplates(): Chainable<void>
 
       /**
        * Changes the config so that the registration flow lifespan is very short.
@@ -166,7 +297,24 @@ declare global {
        * @param opts
        */
       reauth(opts: {
-        expect: { email; success?: boolean }
+        expect: { email: string; success?: boolean }
+        type: { email?: string; password?: string }
+      }): Chainable<void>
+
+      /**
+       * Change the config file to support lookup secrets
+       * @param value
+       */
+      useLookupSecrets(value: boolean): Chainable<void>
+
+      /**
+       * Re-authenticates a user.
+       *
+       * @param opts
+       */
+      reauthWithOtherAccount(opts: {
+        previousUrl: string
+        expect: { email: string; success?: boolean }
         type: { email?: string; password?: string }
       }): Chainable<void>
 
@@ -201,7 +349,7 @@ declare global {
       expectSettingsSaved(): Chainable<void>
 
       clearCookies(
-        options?: Partial<Loggable & Timeoutable & { domain: null | string }>
+        options?: Partial<Loggable & Timeoutable & { domain: null | string }>,
       ): Chainable<null>
 
       /**
@@ -217,7 +365,12 @@ declare global {
       /**
        * Submits a profile form by clicking the button with method=profile
        */
-      submitProfileForm(): Chainable<null>
+      submitProfileForm(app?: "mobile" | "express" | "react"): Chainable<null>
+
+      /**
+       * Submits a code form by clicking the button with method=code
+       */
+      submitCodeForm(app: "mobile" | "express" | "react"): Chainable<void>
 
       /**
        * Expect a CSRF error to occur
@@ -234,7 +387,7 @@ declare global {
        */
       shouldErrorOnDisallowedReturnTo(
         init: string,
-        opts: { app: string }
+        opts: { app: string },
       ): Chainable<void>
 
       /**
@@ -246,7 +399,7 @@ declare global {
        *
        * @param type
        */
-      clickWebAuthButton(type: 'login' | 'register'): Chainable<void>
+      clickWebAuthButton(type: "login" | "register"): Chainable<void>
 
       /**
        * Sign up a user using Social Sign In
@@ -254,6 +407,7 @@ declare global {
        * @param opts
        */
       registerOidc(opts: {
+        app: app
         email?: string
         website?: string
         scopes?: Array<string>
@@ -271,16 +425,19 @@ declare global {
        * @param opts
        */
       loginOidc(opts: {
+        app: app
         expectSession?: boolean
         url?: string
+        preTriggerHook?: () => void
       }): Chainable<void>
 
       /**
        * Triggers a Social Sign In flow for the given provider
        *
+       * @param app
        * @param provider
        */
-      triggerOidc(provider?: string): Chainable<void>
+      triggerOidc(app: "react" | "express", provider?: string): Chainable<void>
 
       /**
        * Changes the config so that the recovery privileged lifespan is very long.
@@ -292,13 +449,31 @@ declare global {
       longRecoveryLifespan(): Chainable<void>
 
       /**
+       * Changes the config so that the recovery privileged lifespan is very short.
+       *
+       * Useful when testing privileged recovery flows.
+       *
+       * @see shortPrivilegedRecoveryTime()
+       */
+      shortRecoveryLifespan(): Chainable<void>
+
+      /**
        * Changes the config so that the verification privileged lifespan is very long.
+       *
+       * Useful when testing recovery/verification flows.
+       *
+       * @see shortLinkLifespan()
+       */
+      longVerificationLifespan(): Chainable<void>
+
+      /**
+       * Changes the config so that the verification privileged lifespan is very short.
        *
        * Useful when testing privileged verification flows.
        *
        * @see shortPrivilegedVerificationTime()
        */
-      longVerificationLifespan(): Chainable<void>
+      shortVerificationLifespan(): Chainable<void>
 
       /**
        * Log a user out
@@ -331,6 +506,40 @@ declare global {
       shortLinkLifespan(): Chainable<void>
 
       /**
+       * Changes the config so that the code lifespan is very short.
+       *
+       * Useful when testing recovery/verification flows.
+       *
+       * @see longCodeLifespan()
+       */
+      shortCodeLifespan(): Chainable<void>
+
+      /**
+       * Sets the `lifespan` of a strategy to 1ms (a short value)
+       *
+       * Useful to test the behavior if the subject of the strategy expired
+       *
+       * @param s the strategy
+       */
+      shortLifespan(s: Strategy): Chainable<void>
+
+      /**
+       * Sets the `lifespan` of a strategy to 1m
+       *
+       * @param s the strategy
+       */
+      longLifespan(s: Strategy): Chainable<void>
+
+      /**
+       * Changes the config so that the code lifespan is very long.
+       *
+       * Useful when testing recovery/verification flows.
+       *
+       * @see shortCodeLifespan()
+       */
+      longCodeLifespan(): Chainable<void>
+
+      /**
        * Expect a recovery email which is expired.
        *
        * @param opts
@@ -340,13 +549,23 @@ declare global {
       }): Chainable<void>
 
       /**
+       * Expect a recovery email with a recovery code.
+       *
+       * @param opts
+       */
+      recoveryEmailWithCode(opts?: {
+        expect: { email: string; enterCode?: boolean }
+      }): Chainable<void>
+
+      /**
        * Expect a verification email which is expired.
        *
        * @param opts
        */
       verifyEmailButExpired(opts?: {
-        expect: { password?: string; email: string }
-      }): Chainable<string>
+        expect: { email: string }
+        strategy?: Strategy
+      }): Chainable<void>
 
       /**
        * Disables verification
@@ -364,9 +583,31 @@ declare global {
       enableRecovery(): Chainable<void>
 
       /**
+       * Sets the recovery strategy to use
+       */
+      useRecoveryStrategy(strategy: Strategy): Chainable<void>
+
+      /**
+       * Disables a specific recovery strategy
+       *
+       * @param strategy the recovery strategy to disable
+       */
+      disableRecoveryStrategy(strategy: Strategy): Chainable<void>
+
+      /**
        * Disabled recovery
        */
       disableRecovery(): Chainable<void>
+
+      /**
+       * Disables registration
+       */
+      disableRegistration(): Chainable<void>
+
+      /**
+       * Enables registration
+       */
+      enableRegistration(): Chainable<void>
 
       /**
        * Expect a recovery email which is valid.
@@ -376,7 +617,7 @@ declare global {
       recoverEmail(opts: {
         expect: { email: string }
         shouldVisit?: boolean
-      }): Chainable<string>
+      }): Chainable<MailMessage>
 
       /**
        * Expect a verification email which is valid.
@@ -385,13 +626,25 @@ declare global {
        */
       verifyEmail(opts: {
         expect: { email: string; password?: string; redirectTo?: string }
+        strategy?: Strategy
         shouldVisit?: boolean
-      }): Chainable<string>
+      }): Chainable<void>
 
       /**
        * Configures a hook which only allows verified email addresses to sign in.
        */
       enableLoginForVerifiedAddressOnly(): Chainable<void>
+
+      /**
+       * Sets the value for the `notify_unknown_recipients` key for a flow
+       *
+       * @param flow the flow for which to set the config value
+       * @param value the value, defaults to true
+       */
+      notifyUnknownRecipients(
+        flow: "recovery" | "verification",
+        value?: boolean,
+      ): Chainable<void>
 
       /**
        * Sign a user in via the API and return the session.
@@ -401,7 +654,7 @@ declare global {
       loginApi(opts: {
         email: string
         password: string
-      }): Chainable<{ session: Session }>
+      }): Chainable<{ session: KratosSession }>
 
       /**
        * Same as loginApi but uses dark magic to avoid cookie issues.
@@ -411,12 +664,12 @@ declare global {
       loginApiWithoutCookies(opts: {
         email: string
         password: string
-      }): Chainable<{ session: Session }>
+      }): Chainable<{ session: KratosSession }>
 
       /**
        * Which app to proxy
        */
-      proxy(app: 'react' | 'express'): Chainable<void>
+      proxy(app: "react" | "express"): Chainable<void>
 
       /**
        * Log a user in on mobile
@@ -430,6 +683,63 @@ declare global {
        * @param schema
        */
       setIdentitySchema(schema: string): Chainable<void>
+
+      /**
+       * Set the default schema
+       * @param id
+       */
+      setDefaultIdentitySchema(id: string): Chainable<void>
+
+      /**
+       * Remove the specified attribute from the given HTML elements
+       */
+      removeAttribute(selectors: string[], attribute: string): Chainable<void>
+
+      /**
+       * Add an input element to the DOM as a child of the given parent
+       */
+      addInputElement(
+        parent: string,
+        attribute: string,
+        value: string,
+      ): Chainable<void>
+
+      /**
+       * Fetches the courier messages from the admin API
+       */
+      getCourierMessages(): Chainable<
+        { recipient: string; template_type: string }[]
+      >
+
+      /**
+       * Enable the verification UI after registration hook
+       */
+      enableVerificationUIAfterRegistration(
+        strategy: "password" | "oidc" | "webauthn",
+      ): Chainable<void>
+
+      /**
+       * Extracts a verification code from the received email
+       */
+      getVerificationCodeFromEmail(email: string): Chainable<string>
+
+      /**
+       * Extracts a registration code from the received email
+       */
+      getRegistrationCodeFromEmail(
+        email: string,
+        opts?: { expectedCount: number; removeMail?: boolean },
+      ): Chainable<string>
+
+      /**
+       * Extracts a login code from the received email
+       */
+      getLoginCodeFromEmail(
+        email: string,
+        opts?: { expectedCount: number },
+      ): Chainable<string>
+
+      useConfig(cb: (config: ConfigBuilder) => ConfigBuilder): Chainable<void>
     }
   }
 }

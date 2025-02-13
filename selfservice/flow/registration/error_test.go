@@ -1,12 +1,17 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package registration_test
 
 import (
 	"context"
 	"encoding/json"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/ory/kratos/driver/config"
 
 	"github.com/gofrs/uuid"
 
@@ -23,7 +28,6 @@ import (
 
 	"github.com/ory/herodot"
 
-	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/internal"
 	"github.com/ory/kratos/internal/testhelpers"
 	"github.com/ory/kratos/schema"
@@ -34,10 +38,13 @@ import (
 )
 
 func TestHandleError(t *testing.T) {
+	ctx := context.Background()
 	conf, reg := internal.NewFastRegistryWithMocks(t)
-	conf.MustSet(config.ViperKeyDefaultIdentitySchemaURL, "file://./stub/login.schema.json")
 
-	_, admin := testhelpers.NewKratosServer(t, reg)
+	conf.MustSet(ctx, config.ViperKeySelfServiceRegistrationEnabled, true)
+	testhelpers.SetDefaultIdentitySchema(conf, "file://./stub/login.schema.json")
+
+	public, _ := testhelpers.NewKratosServer(t, reg)
 
 	router := httprouter.New()
 	ts := httptest.NewServer(router)
@@ -47,11 +54,11 @@ func TestHandleError(t *testing.T) {
 	testhelpers.NewErrorTestServer(t, reg)
 
 	h := reg.RegistrationFlowErrorHandler()
-	sdk := testhelpers.NewSDKClient(admin)
+	sdk := testhelpers.NewSDKClient(public)
 
 	var registrationFlow *registration.Flow
 	var flowError error
-	var group node.Group
+	var group node.UiNodeGroup
 	router.GET("/error", func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 		h.WriteFlowError(w, r, registrationFlow, group, flowError)
 	})
@@ -78,9 +85,9 @@ func TestHandleError(t *testing.T) {
 		res, err := ts.Client().Get(ts.URL + "/error")
 		require.NoError(t, err)
 		defer res.Body.Close()
-		require.Contains(t, res.Request.URL.String(), conf.SelfServiceFlowErrorURL().String()+"?id=")
+		require.Contains(t, res.Request.URL.String(), conf.SelfServiceFlowErrorURL(ctx).String()+"?id=")
 
-		sse, _, err := sdk.V0alpha2Api.GetSelfServiceError(context.Background()).Id(res.Request.URL.Query().Get("id")).Execute()
+		sse, _, err := sdk.FrontendAPI.GetFlowError(context.Background()).Id(res.Request.URL.Query().Get("id")).Execute()
 		require.NoError(t, err)
 
 		return sse.Error, nil
@@ -108,9 +115,9 @@ func TestHandleError(t *testing.T) {
 		require.NoError(t, err)
 		defer res.Body.Close()
 		assert.Contains(t, res.Header.Get("Content-Type"), "application/json")
-		assert.NotContains(t, res.Request.URL.String(), conf.SelfServiceFlowErrorURL().String()+"?id=")
+		assert.NotContains(t, res.Request.URL.String(), conf.SelfServiceFlowErrorURL(ctx).String()+"?id=")
 
-		body, err := ioutil.ReadAll(res.Body)
+		body, err := io.ReadAll(res.Body)
 		require.NoError(t, err)
 		assert.Contains(t, string(body), "system error")
 	})
@@ -134,7 +141,7 @@ func TestHandleError(t *testing.T) {
 				require.NoError(t, err)
 				defer res.Body.Close()
 
-				body, err := ioutil.ReadAll(res.Body)
+				body, err := io.ReadAll(res.Body)
 				require.NoError(t, err)
 				require.Equal(t, http.StatusGone, res.StatusCode, "%+v\n\t%s", res.Request, body)
 
@@ -154,7 +161,7 @@ func TestHandleError(t *testing.T) {
 				defer res.Body.Close()
 				require.Equal(t, http.StatusBadRequest, res.StatusCode)
 
-				body, err := ioutil.ReadAll(res.Body)
+				body, err := io.ReadAll(res.Body)
 				require.NoError(t, err)
 				assert.Equal(t, int(text.ErrorValidationInvalidCredentials), int(gjson.GetBytes(body, "ui.messages.0.id").Int()), "%s", body)
 				assert.Equal(t, registrationFlow.ID.String(), gjson.GetBytes(body, "id").String())
@@ -172,7 +179,7 @@ func TestHandleError(t *testing.T) {
 				defer res.Body.Close()
 				require.Equal(t, http.StatusInternalServerError, res.StatusCode)
 
-				body, err := ioutil.ReadAll(res.Body)
+				body, err := io.ReadAll(res.Body)
 				require.NoError(t, err)
 				assert.JSONEq(t, x.MustEncodeJSON(t, flowError), gjson.GetBytes(body, "error").Raw)
 			})
@@ -184,7 +191,7 @@ func TestHandleError(t *testing.T) {
 			res, err := ts.Client().Get(ts.URL + "/error")
 			require.NoError(t, err)
 			defer res.Body.Close()
-			assert.Contains(t, res.Request.URL.String(), conf.SelfServiceFlowRegistrationUI().String()+"?flow=")
+			assert.Contains(t, res.Request.URL.String(), conf.SelfServiceFlowRegistrationUI(ctx).String()+"?flow=")
 
 			rf, err := reg.RegistrationFlowPersister().GetRegistrationFlow(context.Background(), uuid.FromStringOrNil(res.Request.URL.Query().Get("flow")))
 			require.NoError(t, err)

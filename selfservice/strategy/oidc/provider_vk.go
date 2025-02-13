@@ -1,11 +1,17 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package oidc
 
 import (
 	"context"
 	"encoding/json"
-	"net/http"
 	"net/url"
 	"strconv"
+
+	"github.com/hashicorp/go-retryablehttp"
+
+	"github.com/ory/x/httpx"
 
 	"github.com/pkg/errors"
 	"golang.org/x/oauth2"
@@ -13,18 +19,20 @@ import (
 	"github.com/ory/herodot"
 )
 
+var _ OAuth2Provider = (*ProviderVK)(nil)
+
 type ProviderVK struct {
 	config *Configuration
-	public *url.URL
+	reg    Dependencies
 }
 
 func NewProviderVK(
 	config *Configuration,
-	public *url.URL,
-) *ProviderVK {
+	reg Dependencies,
+) Provider {
 	return &ProviderVK{
 		config: config,
-		public: public,
+		reg:    reg,
 	}
 }
 
@@ -32,7 +40,7 @@ func (g *ProviderVK) Config() *Configuration {
 	return g.config
 }
 
-func (g *ProviderVK) oauth2() *oauth2.Config {
+func (g *ProviderVK) oauth2(ctx context.Context) *oauth2.Config {
 	return &oauth2.Config{
 		ClientID:     g.config.ClientID,
 		ClientSecret: g.config.ClientSecret,
@@ -41,7 +49,7 @@ func (g *ProviderVK) oauth2() *oauth2.Config {
 			TokenURL: "https://oauth.vk.com/access_token",
 		},
 		Scopes:      g.config.Scope,
-		RedirectURL: g.config.Redir(g.public),
+		RedirectURL: g.config.Redir(g.reg.Config().OIDCRedirectURIBase(ctx)),
 	}
 }
 
@@ -50,24 +58,17 @@ func (g *ProviderVK) AuthCodeURLOptions(r ider) []oauth2.AuthCodeOption {
 }
 
 func (g *ProviderVK) OAuth2(ctx context.Context) (*oauth2.Config, error) {
-	return g.oauth2(), nil
+	return g.oauth2(ctx), nil
 }
 
-func (g *ProviderVK) Claims(ctx context.Context, exchange *oauth2.Token) (*Claims, error) {
-
+func (g *ProviderVK) Claims(ctx context.Context, exchange *oauth2.Token, query url.Values) (*Claims, error) {
 	o, err := g.OAuth2(ctx)
 	if err != nil {
 		return nil, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("%s", err))
 	}
 
-	client := o.Client(ctx, exchange)
-
-	u, err := url.Parse("https://api.vk.com/method/users.get?fields=photo_200,nickname,bdate,sex&access_token=" + exchange.AccessToken + "&v=5.103")
-	if err != nil {
-		return nil, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("%s", err))
-	}
-
-	req, err := http.NewRequest("GET", u.String(), nil)
+	ctx, client := httpx.SetOAuth2(ctx, g.reg.HTTPClient(ctx), o, exchange)
+	req, err := retryablehttp.NewRequestWithContext(ctx, "GET", "https://api.vk.com/method/users.get?fields=photo_200,nickname,bdate,sex&access_token="+exchange.AccessToken+"&v=5.103", nil)
 	if err != nil {
 		return nil, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("%s", err))
 	}
@@ -78,13 +79,17 @@ func (g *ProviderVK) Claims(ctx context.Context, exchange *oauth2.Token) (*Claim
 	}
 	defer resp.Body.Close()
 
+	if err := logUpstreamError(g.reg.Logger(), resp); err != nil {
+		return nil, err
+	}
+
 	type User struct {
 		Id        int    `json:"id,omitempty"`
 		FirstName string `json:"first_name,omitempty"`
 		LastName  string `json:"last_name,omitempty"`
 		Nickname  string `json:"nickname,omitempty"`
 		Picture   string `json:"photo_200,omitempty"`
-		Email     string
+		Email     string `json:"-"`
 		Gender    int    `json:"sex,omitempty"`
 		BirthDay  string `json:"bdate,omitempty"`
 	}
@@ -97,10 +102,14 @@ func (g *ProviderVK) Claims(ctx context.Context, exchange *oauth2.Token) (*Claim
 		return nil, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("%s", err))
 	}
 
+	if len(response.Result) == 0 {
+		return nil, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("VK did not return a user in the userinfo request."))
+	}
+
 	user := response.Result[0]
 
-	if email := exchange.Extra("email"); email != nil {
-		user.Email = email.(string)
+	if email, ok := exchange.Extra("email").(string); ok {
+		user.Email = email
 	}
 
 	gender := ""
@@ -112,7 +121,7 @@ func (g *ProviderVK) Claims(ctx context.Context, exchange *oauth2.Token) (*Claim
 	}
 
 	return &Claims{
-		Issuer:     u.String(),
+		Issuer:     "https://api.vk.com/method/users.get",
 		Subject:    strconv.Itoa(user.Id),
 		GivenName:  user.FirstName,
 		FamilyName: user.LastName,

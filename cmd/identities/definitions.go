@@ -1,9 +1,12 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package identities
 
 import (
 	"strings"
 
-	kratos "github.com/ory/kratos-client-go"
+	kratos "github.com/ory/kratos/internal/httpclient"
 
 	"github.com/ory/x/cmdx"
 )
@@ -11,15 +14,17 @@ import (
 type (
 	outputIdentity           kratos.Identity
 	outputIdentityCollection struct {
-		identities []kratos.Identity
+		Identities       []kratos.Identity `json:"identities"`
+		NextPageToken    string            `json:"next_page_token"`
+		includePageToken bool
 	}
 )
 
-func (_ *outputIdentity) Header() []string {
+func (outputIdentity) Header() []string {
 	return []string{"ID", "VERIFIED ADDRESSES", "RECOVERY ADDRESSES", "SCHEMA ID", "SCHEMA URL"}
 }
 
-func (i *outputIdentity) Columns() []string {
+func (i outputIdentity) Columns() []string {
 	data := [5]string{
 		i.Id,
 		cmdx.None,
@@ -49,45 +54,32 @@ func (i *outputIdentity) Columns() []string {
 	return data[:]
 }
 
-func (i *outputIdentity) Interface() interface{} {
+func (i outputIdentity) Interface() interface{} {
 	return i
 }
 
-func (_ *outputIdentityCollection) Header() []string {
-	return []string{"ID", "VERIFIED ADDRESS 1", "RECOVERY ADDRESS 1", "SCHEMA ID", "SCHEMA URL"}
+func (outputIdentityCollection) Header() []string {
+	return outputIdentity{}.Header()
 }
 
-func (c *outputIdentityCollection) Table() [][]string {
-	rows := make([][]string, len(c.identities))
-	for i, ident := range c.identities {
-		data := [5]string{
-			ident.Id,
-			cmdx.None,
-			cmdx.None,
-			cmdx.None,
-			cmdx.None,
-		}
-
-		if len(ident.VerifiableAddresses) != 0 {
-			data[1] = (ident.VerifiableAddresses)[0].Value
-		}
-
-		if len(ident.RecoveryAddresses) != 0 {
-			data[2] = (ident.RecoveryAddresses)[0].Value
-		}
-
-		data[3] = ident.SchemaId
-		data[4] = ident.SchemaUrl
-
-		rows[i] = data[:]
+func (c outputIdentityCollection) Table() [][]string {
+	rows := make([][]string, len(c.Identities))
+	for i, ident := range c.Identities {
+		rows[i] = outputIdentity(ident).Columns()
 	}
-	return rows
+	return append(rows,
+		[]string{""},
+		[]string{"NEXT PAGE TOKEN", c.NextPageToken},
+	)
 }
 
-func (c *outputIdentityCollection) Interface() interface{} {
-	return c.identities
+func (c outputIdentityCollection) Interface() interface{} {
+	if c.includePageToken {
+		return c
+	}
+	return c.Identities
 }
 
 func (c *outputIdentityCollection) Len() int {
-	return len(c.identities)
+	return len(c.Identities)
 }

@@ -10,6 +10,7 @@ selfservice:
         default_browser_return_url: http://localhost:4455/login
 
     registration:
+      enable_legacy_one_step: true
       ui_url: http://localhost:4455/registration
       after:
         password:
@@ -26,6 +27,8 @@ selfservice:
       ui_url: http://localhost:4455/recovery
 
   methods:
+    code:
+      mfa_enabled: true
     totp:
       enabled: true
       config:
@@ -41,7 +44,9 @@ selfservice:
           display_name: Ory
 
 identity:
-  default_schema_url: file://test/e2e/profiles/email/identity.traits.schema.json
+  schemas:
+    - id: default
+      url: file://test/e2e/profiles/mfa/identity.traits.schema.json
 
 session:
   whoami:

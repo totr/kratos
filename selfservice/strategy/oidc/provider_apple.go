@@ -1,14 +1,20 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package oidc
 
 import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"net/url"
 	"time"
 
-	"github.com/form3tech-oss/jwt-go"
+	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/golang-jwt/jwt/v4"
+
 	"github.com/pkg/errors"
 
 	"golang.org/x/oauth2"
@@ -16,19 +22,22 @@ import (
 
 type ProviderApple struct {
 	*ProviderGenericOIDC
+	JWKSUrl string
 }
+
+var _ OAuth2Provider = (*ProviderApple)(nil)
 
 func NewProviderApple(
 	config *Configuration,
-	public *url.URL,
-) *ProviderApple {
+	reg Dependencies,
+) Provider {
 	config.IssuerURL = "https://appleid.apple.com"
-
 	return &ProviderApple{
 		ProviderGenericOIDC: &ProviderGenericOIDC{
 			config: config,
-			public: public,
+			reg:    reg,
 		},
+		JWKSUrl: "https://appleid.apple.com/auth/keys",
 	}
 }
 
@@ -52,10 +61,10 @@ func (a *ProviderApple) newClientSecret() (string, error) {
 	expirationTime := time.Now().Add(5 * time.Minute)
 
 	appleToken := jwt.NewWithClaims(jwt.SigningMethodES256,
-		jwt.StandardClaims{
-			Audience:  []string{a.config.IssuerURL},
-			ExpiresAt: expirationTime.Unix(),
-			IssuedAt:  now.Unix(),
+		jwt.RegisteredClaims{
+			Audience:  []string{"https://appleid.apple.com"},
+			ExpiresAt: jwt.NewNumericDate(expirationTime),
+			IssuedAt:  jwt.NewNumericDate(now),
 			Issuer:    a.config.TeamId,
 			Subject:   a.config.ClientID,
 		})
@@ -64,7 +73,7 @@ func (a *ProviderApple) newClientSecret() (string, error) {
 	return appleToken.SignedString(privateKey)
 }
 
-func (a *ProviderApple) oauth2() (*oauth2.Config, error) {
+func (a *ProviderApple) oauth2(ctx context.Context) (*oauth2.Config, error) {
 	// Apple requires a JWT token that acts as a client secret
 	secret, err := a.newClientSecret()
 	if err != nil {
@@ -73,14 +82,14 @@ func (a *ProviderApple) oauth2() (*oauth2.Config, error) {
 	a.config.ClientSecret = secret
 
 	endpoint := oauth2.Endpoint{
-		AuthURL:  a.config.IssuerURL + "/auth/authorize",
-		TokenURL: a.config.IssuerURL + "/auth/token",
+		AuthURL:  "https://appleid.apple.com/auth/authorize",
+		TokenURL: "https://appleid.apple.com/auth/token",
 	}
-	return a.oauth2ConfigFromEndpoint(endpoint), nil
+	return a.oauth2ConfigFromEndpoint(ctx, endpoint), nil
 }
 
-func (a *ProviderApple) OAuth2(context.Context) (*oauth2.Config, error) {
-	return a.oauth2()
+func (a *ProviderApple) OAuth2(ctx context.Context) (*oauth2.Config, error) {
+	return a.oauth2(ctx)
 }
 
 func (a *ProviderApple) AuthCodeURLOptions(r ider) []oauth2.AuthCodeOption {
@@ -103,4 +112,61 @@ func (a *ProviderApple) AuthCodeURLOptions(r ider) []oauth2.AuthCodeOption {
 	}
 
 	return options
+}
+
+func (a *ProviderApple) Claims(ctx context.Context, exchange *oauth2.Token, query url.Values) (*Claims, error) {
+	claims, err := a.ProviderGenericOIDC.Claims(ctx, exchange, query)
+	if err != nil {
+		return claims, err
+	}
+	a.DecodeQuery(query, claims)
+
+	return claims, nil
+}
+
+// decodeQuery decodes extra user info from Apple into the given `Claims`.
+// The info is sent as an extra query parameter to the redirect URL.
+// See https://developer.apple.com/documentation/sign_in_with_apple/sign_in_with_apple_js/configuring_your_webpage_for_sign_in_with_apple#3331292
+// Note that there's no way to make sure the info hasn't been tampered with.
+func (a *ProviderApple) DecodeQuery(query url.Values, claims *Claims) {
+	var user struct {
+		Name *struct {
+			FirstName *string `json:"firstName"`
+			LastName  *string `json:"lastName"`
+		} `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(query.Get("user")), &user); err == nil {
+		if name := user.Name; name != nil {
+			if firstName := name.FirstName; firstName != nil {
+				if claims.GivenName == "" {
+					claims.GivenName = *firstName
+				}
+			}
+			if lastName := name.LastName; lastName != nil {
+				if claims.LastName == "" {
+					claims.LastName = *lastName
+				}
+				if claims.FamilyName == "" {
+					claims.FamilyName = *lastName
+				}
+			}
+		}
+	}
+}
+
+var _ IDTokenVerifier = new(ProviderApple)
+
+const issuerURLApple = "https://appleid.apple.com"
+
+func (a *ProviderApple) Verify(ctx context.Context, rawIDToken string) (*Claims, error) {
+	keySet := oidc.NewRemoteKeySet(ctx, a.JWKSUrl)
+	ctx = oidc.ClientContext(ctx, a.reg.HTTPClient(ctx).HTTPClient)
+
+	return verifyToken(ctx, keySet, a.config, rawIDToken, issuerURLApple)
+}
+
+var _ NonceValidationSkipper = new(ProviderApple)
+
+func (a *ProviderApple) CanSkipNonce(c *Claims) bool {
+	return c.NonceSupported
 }

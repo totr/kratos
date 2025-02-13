@@ -1,12 +1,18 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package password
 
 import (
+	"context"
 	"encoding/json"
-
-	"github.com/ory/kratos/ui/node"
+	"strings"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/pkg/errors"
+
+	"github.com/ory/kratos/ui/node"
+	"github.com/ory/x/jsonnetsecure"
 
 	"github.com/ory/x/decoderx"
 
@@ -22,18 +28,21 @@ import (
 	"github.com/ory/kratos/x"
 )
 
-var _ login.Strategy = new(Strategy)
-var _ registration.Strategy = new(Strategy)
-var _ identity.ActiveCredentialsCounter = new(Strategy)
+var (
+	_ login.Strategy                    = new(Strategy)
+	_ registration.Strategy             = new(Strategy)
+	_ identity.ActiveCredentialsCounter = new(Strategy)
+)
 
 type registrationStrategyDependencies interface {
 	x.LoggingProvider
 	x.WriterProvider
 	x.CSRFTokenGeneratorProvider
 	x.CSRFProvider
-
+	x.HTTPClientProvider
+	x.TracingProvider
+	jsonnetsecure.VMProvider
 	config.Provider
-
 	continuity.ManagementProvider
 
 	errorx.ManagementProvider
@@ -59,6 +68,7 @@ type registrationStrategyDependencies interface {
 
 	identity.PrivilegedPoolProvider
 	identity.ValidationProvider
+	identity.ManagementProvider
 
 	session.HandlerProvider
 	session.ManagementProvider
@@ -70,24 +80,25 @@ type Strategy struct {
 	hd *decoderx.HTTP
 }
 
-func NewStrategy(d registrationStrategyDependencies) *Strategy {
+func NewStrategy(d any) *Strategy {
 	return &Strategy{
-		d:  d,
+		d:  d.(registrationStrategyDependencies),
 		v:  validator.New(),
 		hd: decoderx.NewHTTP(),
 	}
 }
 
-func (s *Strategy) CountActiveCredentials(cc map[identity.CredentialsType]identity.Credentials) (count int, err error) {
+func (s *Strategy) CountActiveFirstFactorCredentials(ctx context.Context, cc map[identity.CredentialsType]identity.Credentials) (count int, err error) {
 	for _, c := range cc {
 		if c.Type == s.ID() && len(c.Config) > 0 {
-			var conf CredentialsConfig
+			var conf identity.CredentialsPassword
 			if err = json.Unmarshal(c.Config, &conf); err != nil {
 				return 0, errors.WithStack(err)
 			}
 
-			if len(c.Identifiers) > 0 && len(c.Identifiers[0]) > 0 &&
-				(hash.IsBcryptHash([]byte(conf.HashedPassword)) || hash.IsArgon2idHash([]byte(conf.HashedPassword))) {
+			if len(strings.Join(c.Identifiers, "")) > 0 &&
+				((s.d.Config().PasswordMigrationHook(ctx).Enabled && conf.UsePasswordMigrationHook) ||
+					len(conf.HashedPassword) > 0) {
 				count++
 			}
 		}
@@ -95,10 +106,21 @@ func (s *Strategy) CountActiveCredentials(cc map[identity.CredentialsType]identi
 	return
 }
 
+func (s *Strategy) CountActiveMultiFactorCredentials(_ context.Context, _ map[identity.CredentialsType]identity.Credentials) (count int, err error) {
+	return 0, nil
+}
+
 func (s *Strategy) ID() identity.CredentialsType {
 	return identity.CredentialsTypePassword
 }
 
-func (s *Strategy) NodeGroup() node.Group {
+func (s *Strategy) CompletedAuthenticationMethod(_ context.Context) session.AuthenticationMethod {
+	return session.AuthenticationMethod{
+		Method: s.ID(),
+		AAL:    identity.AuthenticatorAssuranceLevel1,
+	}
+}
+
+func (s *Strategy) NodeGroup() node.UiNodeGroup {
 	return node.PasswordGroup
 }

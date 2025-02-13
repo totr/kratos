@@ -1,7 +1,14 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package template
 
-type (
-	TemplateConfig interface {
-		CourierTemplatesRoot() string
-	}
+import (
+	"github.com/ory/kratos/driver/config"
+	"github.com/ory/kratos/x"
 )
+
+type Dependencies interface {
+	CourierConfig() config.CourierConfigs
+	x.HTTPClientProvider
+}

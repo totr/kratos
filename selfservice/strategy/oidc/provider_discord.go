@@ -1,3 +1,6 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package oidc
 
 import (
@@ -16,18 +19,20 @@ import (
 	"github.com/ory/x/stringsx"
 )
 
+var _ OAuth2Provider = (*ProviderDiscord)(nil)
+
 type ProviderDiscord struct {
 	config *Configuration
-	public *url.URL
+	reg    Dependencies
 }
 
 func NewProviderDiscord(
 	config *Configuration,
-	public *url.URL,
-) *ProviderDiscord {
+	reg Dependencies,
+) Provider {
 	return &ProviderDiscord{
 		config: config,
-		public: public,
+		reg:    reg,
 	}
 }
 
@@ -35,7 +40,7 @@ func (d *ProviderDiscord) Config() *Configuration {
 	return d.config
 }
 
-func (d *ProviderDiscord) oauth2() *oauth2.Config {
+func (d *ProviderDiscord) oauth2(ctx context.Context) *oauth2.Config {
 	return &oauth2.Config{
 		ClientID:     d.config.ClientID,
 		ClientSecret: d.config.ClientSecret,
@@ -43,13 +48,13 @@ func (d *ProviderDiscord) oauth2() *oauth2.Config {
 			AuthURL:  discordgo.EndpointOauth2 + "authorize",
 			TokenURL: discordgo.EndpointOauth2 + "token",
 		},
-		RedirectURL: d.config.Redir(d.public),
+		RedirectURL: d.config.Redir(d.reg.Config().OIDCRedirectURIBase(ctx)),
 		Scopes:      d.config.Scope,
 	}
 }
 
 func (d *ProviderDiscord) OAuth2(ctx context.Context) (*oauth2.Config, error) {
-	return d.oauth2(), nil
+	return d.oauth2(ctx), nil
 }
 
 func (d *ProviderDiscord) AuthCodeURLOptions(r ider) []oauth2.AuthCodeOption {
@@ -63,7 +68,7 @@ func (d *ProviderDiscord) AuthCodeURLOptions(r ider) []oauth2.AuthCodeOption {
 	}
 }
 
-func (d *ProviderDiscord) Claims(ctx context.Context, exchange *oauth2.Token) (*Claims, error) {
+func (d *ProviderDiscord) Claims(ctx context.Context, exchange *oauth2.Token, query url.Values) (*Claims, error) {
 	grantedScopes := stringsx.Splitx(fmt.Sprintf("%s", exchange.Extra("scope")), " ")
 	for _, check := range d.Config().Scope {
 		if !stringslice.Has(grantedScopes, check) {
@@ -90,7 +95,7 @@ func (d *ProviderDiscord) Claims(ctx context.Context, exchange *oauth2.Token) (*
 		Picture:           user.AvatarURL(""),
 		Email:             user.Email,
 		EmailVerified:     x.ConvertibleBoolean(user.Verified),
-		Locale:            user.Locale,
+		Locale:            Locale(user.Locale),
 	}
 
 	return claims, nil

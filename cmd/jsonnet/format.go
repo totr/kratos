@@ -1,8 +1,11 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package jsonnet
 
 import (
 	"fmt"
-	"io/ioutil"
+	"os"
 	"path/filepath"
 
 	"github.com/google/go-jsonnet/formatter"
@@ -12,9 +15,18 @@ import (
 	"github.com/ory/x/flagx"
 )
 
+func NewFormatCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "format",
+		Short: "Helpers for formatting code",
+	}
+	c.AddCommand(NewJsonnetFormatCmd())
+	return c
+}
+
 func NewJsonnetFormatCmd() *cobra.Command {
 	c := &cobra.Command{
-		Use: "format path/to/files/*.jsonnet [more/files.jsonnet, [supports/**/{foo,bar}.jsonnet]]",
+		Use: "jsonnet path/to/files/*.jsonnet [more/files.jsonnet] [supports/**/{foo,bar}.jsonnet]",
 		Long: `Formats JSONNet files using the official JSONNet formatter.
 
 Use -w or --write to write output back to files instead of stdout.
@@ -28,14 +40,14 @@ Use -w or --write to write output back to files instead of stdout.
 
 				shouldWrite := flagx.MustGetBool(cmd, "write")
 				for _, file := range files {
-					content, err := ioutil.ReadFile(file)
+					content, err := os.ReadFile(file)
 					cmdx.Must(err, `Unable to read file "%s" because: %s`, file, err)
 
 					output, err := formatter.Format(file, string(content), formatter.DefaultOptions())
 					cmdx.Must(err, `JSONNet file "%s" could not be formatted: %s`, file, err)
 
 					if shouldWrite {
-						err := ioutil.WriteFile(file, []byte(output), 0644) // #nosec
+						err := os.WriteFile(file, []byte(output), 0644) //#nosec
 						cmdx.Must(err, `Could not write to file "%s" because: %s`, file, err)
 					} else {
 						fmt.Println(output)

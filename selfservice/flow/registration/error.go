@@ -1,9 +1,20 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package registration
 
 import (
 	"net/http"
 
+	"github.com/gofrs/uuid"
+
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/ory/kratos/identity"
+	"github.com/ory/kratos/schema"
+	"github.com/ory/kratos/selfservice/sessiontokenexchange"
 	"github.com/ory/kratos/ui/node"
+	"github.com/ory/kratos/x/events"
 
 	"github.com/ory/kratos/selfservice/flow"
 	"github.com/ory/kratos/text"
@@ -17,8 +28,9 @@ import (
 )
 
 var (
-	ErrHookAbortFlow   = errors.New("aborted registration hook execution")
-	ErrAlreadyLoggedIn = herodot.ErrBadRequest.WithID(text.ErrIDAlreadyLoggedIn).WithError("you are already logged in").WithReason("A valid session was detected and thus registration is not possible.")
+	ErrHookAbortFlow        = errors.New("aborted registration hook execution")
+	ErrAlreadyLoggedIn      = herodot.ErrBadRequest.WithID(text.ErrIDAlreadyLoggedIn).WithError("you are already logged in").WithReason("A valid session was detected and thus registration is not possible.")
+	ErrRegistrationDisabled = herodot.ErrBadRequest.WithID(text.ErrIDSelfServiceFlowDisabled).WithError("registration flow disabled").WithReason("Registration is not allowed because it was disabled.")
 )
 
 type (
@@ -28,6 +40,7 @@ type (
 		x.LoggingProvider
 		config.Provider
 
+		sessiontokenexchange.PersistenceProvider
 		FlowPersistenceProvider
 		HandlerProvider
 	}
@@ -54,30 +67,39 @@ func (s *ErrorHandler) PrepareReplacementForExpiredFlow(w http.ResponseWriter, r
 		return nil, err
 	}
 
-	a.UI.Messages.Add(text.NewErrorValidationRegistrationFlowExpired(e.Ago))
+	a.UI.Messages.Add(text.NewErrorValidationRegistrationFlowExpired(e.ExpiredAt))
 	if err := s.d.RegistrationFlowPersister().UpdateRegistrationFlow(r.Context(), a); err != nil {
 		return nil, err
 	}
 
 	return e.WithFlow(a), nil
 }
+
 func (s *ErrorHandler) WriteFlowError(
 	w http.ResponseWriter,
 	r *http.Request,
 	f *Flow,
-	group node.Group,
+	group node.UiNodeGroup,
 	err error,
 ) {
-	s.d.Audit().
+	if dup := new(identity.ErrDuplicateCredentials); errors.As(err, &dup) {
+		err = schema.NewDuplicateCredentialsError(dup)
+	}
+
+	logger := s.d.Audit().
 		WithError(err).
 		WithRequest(r).
-		WithField("registration_flow", f).
+		WithField("registration_flow", f.ToLoggerField())
+
+	logger.
 		Info("Encountered self-service flow error.")
 
 	if f == nil {
+		trace.SpanFromContext(r.Context()).AddEvent(events.NewRegistrationFailed(r.Context(), uuid.Nil, "", "", err))
 		s.forward(w, r, nil, err)
 		return
 	}
+	trace.SpanFromContext(r.Context()).AddEvent(events.NewRegistrationFailed(r.Context(), f.ID, string(f.Type), f.Active.String(), err))
 
 	if expired, inner := s.PrepareReplacementForExpiredFlow(w, r, f, err); inner != nil {
 		s.forward(w, r, f, err)
@@ -86,7 +108,7 @@ func (s *ErrorHandler) WriteFlowError(
 		if f.Type == flow.TypeAPI || x.IsJSONRequest(r) {
 			s.d.Writer().WriteError(w, r, expired)
 		} else {
-			http.Redirect(w, r, expired.GetFlow().AppendTo(s.d.Config(r.Context()).SelfServiceFlowRegistrationUI()).String(), http.StatusSeeOther)
+			http.Redirect(w, r, expired.GetFlow().AppendTo(s.d.Config().SelfServiceFlowRegistrationUI(r.Context())).String(), http.StatusSeeOther)
 		}
 		return
 	}
@@ -97,7 +119,13 @@ func (s *ErrorHandler) WriteFlowError(
 		return
 	}
 
-	if err := SortNodes(f.UI.Nodes, s.d.Config(r.Context()).DefaultIdentityTraitsSchemaURL().String()); err != nil {
+	ds, err := s.d.Config().DefaultIdentityTraitsSchemaURL(r.Context())
+	if err != nil {
+		s.forward(w, r, f, err)
+		return
+	}
+
+	if err := SortNodes(r.Context(), f.UI.Nodes, ds.String()); err != nil {
 		s.forward(w, r, f, err)
 		return
 	}
@@ -108,7 +136,11 @@ func (s *ErrorHandler) WriteFlowError(
 	}
 
 	if f.Type == flow.TypeBrowser && !x.IsJSONRequest(r) {
-		http.Redirect(w, r, f.AppendTo(s.d.Config(r.Context()).SelfServiceFlowRegistrationUI()).String(), http.StatusFound)
+		http.Redirect(w, r, f.AppendTo(s.d.Config().SelfServiceFlowRegistrationUI(r.Context())).String(), http.StatusFound)
+		return
+	}
+	if _, hasCode, _ := s.d.SessionTokenExchangePersister().CodeForFlow(r.Context(), f.ID); group == node.OpenIDConnectGroup && f.Type == flow.TypeAPI && hasCode {
+		http.Redirect(w, r, f.ReturnTo, http.StatusSeeOther)
 		return
 	}
 

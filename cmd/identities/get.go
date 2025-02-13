@@ -1,9 +1,12 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package identities
 
 import (
 	"fmt"
 
-	kratos "github.com/ory/kratos-client-go"
+	kratos "github.com/ory/kratos/internal/httpclient"
 	"github.com/ory/kratos/x"
 	"github.com/ory/x/cmdx"
 	"github.com/ory/x/stringsx"
@@ -20,23 +23,36 @@ const (
 )
 
 func NewGetCmd() *cobra.Command {
+	var cmd = &cobra.Command{
+		Use:   "get",
+		Short: "Get resources",
+	}
+	cmd.AddCommand(NewGetIdentityCmd())
+	cliclient.RegisterClientFlags(cmd.PersistentFlags())
+	cmdx.RegisterFormatFlags(cmd.PersistentFlags())
+	return cmd
+}
+
+func NewGetIdentityCmd() *cobra.Command {
 	var (
 		includeCreds []string
 	)
 
 	cmd := &cobra.Command{
-		Use:   "get <id-0 [id-1 ...]>",
-		Short: "Get one or more identities by ID",
+		Use:   "identity [id-1] [id-2] [id-n]",
+		Short: "Get one or more identities by their ID(s)",
 		Long: fmt.Sprintf(`This command gets all the details about an identity. To get an identity by some selector, e.g. the recovery email address, use the list command in combination with jq.
 
-%s
-`, clihelpers.WarningJQIsComplicated),
+%s`, clihelpers.WarningJQIsComplicated),
 		Example: `To get the identities with the recovery email address at the domain "ory.sh", run:
 
-	$ kratos identities get $(kratos identities list --format json | jq -r 'map(select(.recovery_addresses[].value | endswith("@ory.sh"))) | .[].id')`,
+	{{ .CommandPath }} $({{ .Root.Name }} ls identities --format json | jq -r 'map(select(.recovery_addresses[].value | endswith("@ory.sh"))) | .[].id')`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c := cliclient.NewClient(cmd)
+			c, err := cliclient.NewClient(cmd)
+			if err != nil {
+				return err
+			}
 
 			// we check includeCreds argument is valid
 			for _, opt := range includeCreds {
@@ -50,13 +66,13 @@ func NewGetCmd() *cobra.Command {
 			identities := make([]kratos.Identity, 0, len(args))
 			failed := make(map[string]error)
 			for _, id := range args {
-				identity, _, err := c.V0alpha2Api.
-					AdminGetIdentity(cmd.Context(), id).
+				identity, _, err := c.IdentityAPI.
+					GetIdentity(cmd.Context(), id).
 					IncludeCredential(includeCreds).
 					Execute()
 
 				if x.SDKError(err) != nil {
-					failed[id] = err
+					failed[id] = cmdx.PrintOpenAPIError(cmd, err)
 					continue
 				}
 
@@ -66,7 +82,7 @@ func NewGetCmd() *cobra.Command {
 			if len(identities) == 1 {
 				cmdx.PrintRow(cmd, (*outputIdentity)(&identities[0]))
 			} else if len(identities) > 1 {
-				cmdx.PrintTable(cmd, &outputIdentityCollection{identities})
+				cmdx.PrintTable(cmd, &outputIdentityCollection{Identities: identities, includePageToken: false})
 			}
 			cmdx.PrintErrors(cmd, failed)
 

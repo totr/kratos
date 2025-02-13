@@ -1,3 +1,6 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package settings
 
 import (
@@ -38,12 +41,11 @@ func (c *UpdateContext) UpdateIdentity(i *identity.Identity) {
 	c.toUpdate = i
 }
 
-func (c *UpdateContext) GetIdentityToUpdate() *identity.Identity {
+func (c *UpdateContext) GetIdentityToUpdate() (*identity.Identity, error) {
 	if c.toUpdate == nil {
-		return c.GetSessionIdentity()
+		return nil, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("Could not find a identity to update."))
 	}
-
-	return c.toUpdate
+	return c.toUpdate, nil
 }
 
 func (c UpdateContext) GetSessionIdentity() *identity.Identity {
@@ -102,7 +104,7 @@ func OnUnauthenticated(reg interface {
 	x.WriterProvider
 }) func(http.ResponseWriter, *http.Request, httprouter.Params) {
 	return func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-		handler := session.RedirectOnUnauthenticated(reg.Config(r.Context()).SelfServiceFlowLoginUI().String())
+		handler := session.RedirectOnUnauthenticated(reg.Config().SelfServiceFlowLoginUI(r.Context()).String())
 		if x.IsJSONRequest(r) {
 			handler = session.RespondWithJSONErrorOnAuthenticated(reg.Writer(), herodot.ErrUnauthorized.WithReasonf("A valid Ory Session Cookie or Ory Session Token is missing."))
 		}

@@ -1,23 +1,44 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package node
 
-import "github.com/ory/kratos/text"
+import (
+	"fmt"
 
-const (
-	InputAttributeTypeText          InputAttributeType = "text"
-	InputAttributeTypePassword      InputAttributeType = "password"
-	InputAttributeTypeNumber        InputAttributeType = "number"
-	InputAttributeTypeCheckbox      InputAttributeType = "checkbox"
-	InputAttributeTypeHidden        InputAttributeType = "hidden"
-	InputAttributeTypeEmail         InputAttributeType = "email"
-	InputAttributeTypeSubmit        InputAttributeType = "submit"
-	InputAttributeTypeButton        InputAttributeType = "button"
-	InputAttributeTypeDateTimeLocal InputAttributeType = "datetime-local"
-	InputAttributeTypeDate          InputAttributeType = "date"
-	InputAttributeTypeURI           InputAttributeType = "url"
+	"github.com/ory/kratos/text"
+	"github.com/ory/kratos/x/webauthnx/js"
 )
 
-// swagger:model uiNodeInputAttributeType
-type InputAttributeType string
+const (
+	InputAttributeTypeText          UiNodeInputAttributeType = "text"
+	InputAttributeTypePassword      UiNodeInputAttributeType = "password"
+	InputAttributeTypeNumber        UiNodeInputAttributeType = "number"
+	InputAttributeTypeCheckbox      UiNodeInputAttributeType = "checkbox"
+	InputAttributeTypeHidden        UiNodeInputAttributeType = "hidden"
+	InputAttributeTypeEmail         UiNodeInputAttributeType = "email"
+	InputAttributeTypeTel           UiNodeInputAttributeType = "tel"
+	InputAttributeTypeSubmit        UiNodeInputAttributeType = "submit"
+	InputAttributeTypeButton        UiNodeInputAttributeType = "button"
+	InputAttributeTypeDateTimeLocal UiNodeInputAttributeType = "datetime-local"
+	InputAttributeTypeDate          UiNodeInputAttributeType = "date"
+	InputAttributeTypeURI           UiNodeInputAttributeType = "url"
+)
+
+const (
+	InputAttributeAutocompleteEmail           UiNodeInputAttributeAutocomplete = "email"
+	InputAttributeAutocompleteTel             UiNodeInputAttributeAutocomplete = "tel"
+	InputAttributeAutocompleteUrl             UiNodeInputAttributeAutocomplete = "url"
+	InputAttributeAutocompleteCurrentPassword UiNodeInputAttributeAutocomplete = "current-password"
+	InputAttributeAutocompleteNewPassword     UiNodeInputAttributeAutocomplete = "new-password"
+	InputAttributeAutocompleteOneTimeCode     UiNodeInputAttributeAutocomplete = "one-time-code"
+)
+
+// swagger:enum UiNodeInputAttributeType
+type UiNodeInputAttributeType string
+
+// swagger:enum UiNodeInputAttributeAutocomplete
+type UiNodeInputAttributeAutocomplete string
 
 // Attributes represents a list of attributes (e.g. `href="foo"` for links).
 //
@@ -36,7 +57,10 @@ type Attributes interface {
 	GetValue() interface{}
 
 	// swagger:ignore
-	GetNodeType() Type
+	GetNodeType() UiNodeType
+
+	// swagger:ignore
+	Matches(other Attributes) bool
 }
 
 // InputAttributes represents the attributes of an input node
@@ -51,13 +75,16 @@ type InputAttributes struct {
 	// The input's element type.
 	//
 	// required: true
-	Type InputAttributeType `json:"type" faker:"-"`
+	Type UiNodeInputAttributeType `json:"type" faker:"-"`
 
 	// The input's value.
 	FieldValue interface{} `json:"value,omitempty" faker:"string"`
 
 	// Mark this input field as required.
 	Required bool `json:"required,omitempty"`
+
+	// The autocomplete attribute for the input.
+	Autocomplete UiNodeInputAttributeAutocomplete `json:"autocomplete,omitempty"`
 
 	// The input's label text.
 	Label *text.Message `json:"label,omitempty"`
@@ -72,13 +99,34 @@ type InputAttributes struct {
 
 	// OnClick may contain javascript which should be executed on click. This is primarily
 	// used for WebAuthn.
+	//
+	// Deprecated: Using OnClick requires the use of eval() which is a security risk. Use OnClickTrigger instead.
 	OnClick string `json:"onclick,omitempty"`
 
+	// OnClickTrigger may contain a WebAuthn trigger which should be executed on click.
+	//
+	// The trigger maps to a JavaScript function provided by Ory, which triggers actions such as PassKey registration or login.
+	OnClickTrigger js.WebAuthnTriggers `json:"onclickTrigger,omitempty"`
+
+	// OnLoad may contain javascript which should be executed on load. This is primarily
+	// used for WebAuthn.
+	//
+	// Deprecated: Using OnLoad requires the use of eval() which is a security risk. Use OnLoadTrigger instead.
+	OnLoad string `json:"onload,omitempty"`
+
+	// OnLoadTrigger may contain a WebAuthn trigger which should be executed on load.
+	//
+	// The trigger maps to a JavaScript function provided by Ory, which triggers actions such as PassKey registration or login.
+	OnLoadTrigger js.WebAuthnTriggers `json:"onloadTrigger,omitempty"`
+
+	// MaxLength may contain the input's maximum length.
+	MaxLength int `json:"maxlength,omitempty"`
+
 	// NodeType represents this node's types. It is a mirror of `node.type` and
-	// is primarily used to allow compatibility with OpenAPI 3.0.
+	// is primarily used to allow compatibility with OpenAPI 3.0.  In this struct it technically always is "input".
 	//
 	// required: true
-	NodeType Type `json:"node_type"`
+	NodeType UiNodeType `json:"node_type"`
 }
 
 // ImageAttributes represents the attributes of an image node.
@@ -97,16 +145,20 @@ type ImageAttributes struct {
 	Identifier string `json:"id"`
 
 	// Width of the image
-	Width int `json:"width,omitempty"`
-
-	// Height of the image
-	Height int `json:"height,omitempty"`
-
-	// NodeType represents this node's types. It is a mirror of `node.type` and
-	// is primarily used to allow compatibility with OpenAPI 3.0.
 	//
 	// required: true
-	NodeType Type `json:"node_type"`
+	Width int `json:"width"`
+
+	// Height of the image
+	//
+	// required: true
+	Height int `json:"height"`
+
+	// NodeType represents this node's types. It is a mirror of `node.type` and
+	// is primarily used to allow compatibility with OpenAPI 3.0.  In this struct it technically always is "img".
+	//
+	// required: true
+	NodeType UiNodeType `json:"node_type"`
 }
 
 // AnchorAttributes represents the attributes of an anchor node.
@@ -130,14 +182,13 @@ type AnchorAttributes struct {
 	Identifier string `json:"id"`
 
 	// NodeType represents this node's types. It is a mirror of `node.type` and
-	// is primarily used to allow compatibility with OpenAPI 3.0.
+	// is primarily used to allow compatibility with OpenAPI 3.0.  In this struct it technically always is "a".
 	//
 	// required: true
-	NodeType Type `json:"node_type"`
+	NodeType UiNodeType `json:"node_type"`
 }
 
 // TextAttributes represents the attributes of a text node.
-//
 //
 // swagger:model uiNodeTextAttributes
 type TextAttributes struct {
@@ -152,10 +203,10 @@ type TextAttributes struct {
 	Identifier string `json:"id"`
 
 	// NodeType represents this node's types. It is a mirror of `node.type` and
-	// is primarily used to allow compatibility with OpenAPI 3.0.
+	// is primarily used to allow compatibility with OpenAPI 3.0.  In this struct it technically always is "text".
 	//
 	// required: true
-	NodeType Type `json:"node_type"`
+	NodeType UiNodeType `json:"node_type"`
 }
 
 // ScriptAttributes represent script nodes which load javascript.
@@ -197,11 +248,20 @@ type ScriptAttributes struct {
 	// required: true
 	Identifier string `json:"id"`
 
-	// NodeType represents this node's types. It is a mirror of `node.type` and
-	// is primarily used to allow compatibility with OpenAPI 3.0.
+	// Nonce for CSP
+	//
+	// A nonce you may want to use to improve your Content Security Policy.
+	// You do not have to use this value but if you want to improve your CSP
+	// policies you may use it. You can also choose to use your own nonce value!
 	//
 	// required: true
-	NodeType Type `json:"node_type"`
+	Nonce string `json:"nonce"`
+
+	// NodeType represents this node's types. It is a mirror of `node.type` and
+	// is primarily used to allow compatibility with OpenAPI 3.0. In this struct it technically always is "script".
+	//
+	// required: true
+	NodeType UiNodeType `json:"node_type"`
 }
 
 var (
@@ -230,6 +290,99 @@ func (a *TextAttributes) ID() string {
 
 func (a *ScriptAttributes) ID() string {
 	return a.Identifier
+}
+
+func (a *InputAttributes) Matches(other Attributes) bool {
+	ot, ok := other.(*InputAttributes)
+	if !ok {
+		return false
+	}
+
+	if len(ot.ID()) > 0 && a.ID() != ot.ID() {
+		return false
+	}
+
+	if len(ot.Type) > 0 && a.Type != ot.Type {
+		return false
+	}
+
+	if ot.FieldValue != nil && fmt.Sprintf("%v", a.FieldValue) != fmt.Sprintf("%v", ot.FieldValue) {
+		return false
+	}
+
+	if len(ot.Name) > 0 && a.Name != ot.Name {
+		return false
+	}
+
+	return true
+}
+
+func (a *ImageAttributes) Matches(other Attributes) bool {
+	ot, ok := other.(*ImageAttributes)
+	if !ok {
+		return false
+	}
+
+	if len(ot.ID()) > 0 && a.ID() != ot.ID() {
+		return false
+	}
+
+	if len(ot.Source) > 0 && a.Source != ot.Source {
+		return false
+	}
+
+	return true
+}
+
+func (a *AnchorAttributes) Matches(other Attributes) bool {
+	ot, ok := other.(*AnchorAttributes)
+	if !ok {
+		return false
+	}
+
+	if len(ot.ID()) > 0 && a.ID() != ot.ID() {
+		return false
+	}
+
+	if len(ot.HREF) > 0 && a.HREF != ot.HREF {
+		return false
+	}
+
+	return true
+}
+
+func (a *TextAttributes) Matches(other Attributes) bool {
+	ot, ok := other.(*TextAttributes)
+	if !ok {
+		return false
+	}
+
+	if len(ot.ID()) > 0 && a.ID() != ot.ID() {
+		return false
+	}
+
+	return true
+}
+
+func (a *ScriptAttributes) Matches(other Attributes) bool {
+	ot, ok := other.(*ScriptAttributes)
+	if !ok {
+		return false
+	}
+
+	if len(ot.ID()) > 0 && a.ID() != ot.ID() {
+		return false
+	}
+
+	if ot.Type != "" && a.Type != ot.Type {
+		return false
+	}
+
+	if ot.Source != "" && a.Source != ot.Source {
+		return false
+	}
+
+	return true
 }
 
 func (a *InputAttributes) SetValue(value interface{}) {
@@ -288,22 +441,22 @@ func (a *TextAttributes) Reset() {
 func (a *ScriptAttributes) Reset() {
 }
 
-func (a *InputAttributes) GetNodeType() Type {
-	return a.NodeType
+func (a *InputAttributes) GetNodeType() UiNodeType {
+	return UiNodeType(a.NodeType)
 }
 
-func (a *ImageAttributes) GetNodeType() Type {
-	return a.NodeType
+func (a *ImageAttributes) GetNodeType() UiNodeType {
+	return UiNodeType(a.NodeType)
 }
 
-func (a *AnchorAttributes) GetNodeType() Type {
-	return a.NodeType
+func (a *AnchorAttributes) GetNodeType() UiNodeType {
+	return UiNodeType(a.NodeType)
 }
 
-func (a *TextAttributes) GetNodeType() Type {
-	return a.NodeType
+func (a *TextAttributes) GetNodeType() UiNodeType {
+	return UiNodeType(a.NodeType)
 }
 
-func (a *ScriptAttributes) GetNodeType() Type {
-	return a.NodeType
+func (a *ScriptAttributes) GetNodeType() UiNodeType {
+	return UiNodeType(a.NodeType)
 }

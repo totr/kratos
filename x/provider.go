@@ -1,14 +1,18 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package x
 
 import (
 	"context"
 
-	"github.com/ory/x/tracing"
-
 	"github.com/gorilla/sessions"
+	"github.com/hashicorp/go-retryablehttp"
 
 	"github.com/ory/herodot"
+	"github.com/ory/x/httpx"
 	"github.com/ory/x/logrusx"
+	"github.com/ory/x/otelx"
 )
 
 type LoggingProvider interface {
@@ -21,24 +25,36 @@ type WriterProvider interface {
 }
 
 type CookieProvider interface {
-	CookieManager(ctx context.Context) sessions.Store
-	ContinuityCookieManager(ctx context.Context) sessions.Store
+	CookieManager(ctx context.Context) sessions.StoreExact
+	ContinuityCookieManager(ctx context.Context) sessions.StoreExact
 }
 
 type TracingProvider interface {
-	Tracer(ctx context.Context) *tracing.Tracer
+	Tracer(ctx context.Context) *otelx.Tracer
 }
 
-type SimpleLogger struct {
+type SimpleLoggerWithClient struct {
 	L *logrusx.Logger
+	C *retryablehttp.Client
+	T *otelx.Tracer
 }
 
-func (s *SimpleLogger) Logger() *logrusx.Logger {
+func (s *SimpleLoggerWithClient) Tracer(_ context.Context) *otelx.Tracer {
+	return s.T
+}
+
+func (s *SimpleLoggerWithClient) Logger() *logrusx.Logger {
 	return s.L
 }
 
-func (s *SimpleLogger) Audit() *logrusx.Logger {
+func (s *SimpleLoggerWithClient) Audit() *logrusx.Logger {
 	return s.L
 }
 
-var _ LoggingProvider = (*SimpleLogger)(nil)
+func (s *SimpleLoggerWithClient) HTTPClient(_ context.Context, _ ...httpx.ResilientOptions) *retryablehttp.Client {
+	return s.C
+}
+
+var _ LoggingProvider = (*SimpleLoggerWithClient)(nil)
+var _ HTTPClientProvider = (*SimpleLoggerWithClient)(nil)
+var _ TracingProvider = (*SimpleLoggerWithClient)(nil)

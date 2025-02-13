@@ -1,81 +1,102 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package courier
 
 import (
+	"context"
 	"encoding/json"
+
+	"github.com/ory/kratos/courier/template"
 
 	"github.com/pkg/errors"
 
-	"github.com/ory/kratos/courier/template"
+	"github.com/ory/kratos/courier/template/email"
 )
 
 type (
-	TemplateType  string
-	EmailTemplate interface {
+	Template interface {
 		json.Marshaler
-		EmailSubject() (string, error)
-		EmailBody() (string, error)
-		EmailBodyPlaintext() (string, error)
+		TemplateType() template.TemplateType
+	}
+
+	EmailTemplate interface {
+		Template
+		EmailSubject(context.Context) (string, error)
+		EmailBody(context.Context) (string, error)
+		EmailBodyPlaintext(context.Context) (string, error)
 		EmailRecipient() (string, error)
 	}
 )
 
-const (
-	TypeRecoveryInvalid     TemplateType = "recovery_invalid"
-	TypeRecoveryValid       TemplateType = "recovery_valid"
-	TypeVerificationInvalid TemplateType = "verification_invalid"
-	TypeVerificationValid   TemplateType = "verification_valid"
-	TypeTestStub            TemplateType = "stub"
-)
-
-func GetTemplateType(t EmailTemplate) (TemplateType, error) {
-	switch t.(type) {
-	case *template.RecoveryInvalid:
-		return TypeRecoveryInvalid, nil
-	case *template.RecoveryValid:
-		return TypeRecoveryValid, nil
-	case *template.VerificationInvalid:
-		return TypeVerificationInvalid, nil
-	case *template.VerificationValid:
-		return TypeVerificationValid, nil
-	case *template.TestStub:
-		return TypeTestStub, nil
-	default:
-		return "", errors.Errorf("unexpected template type")
-	}
-}
-
-func NewEmailTemplateFromMessage(c SMTPConfig, msg Message) (EmailTemplate, error) {
+func NewEmailTemplateFromMessage(d template.Dependencies, msg Message) (EmailTemplate, error) {
 	switch msg.TemplateType {
-	case TypeRecoveryInvalid:
-		var t template.RecoveryInvalidModel
+	case template.TypeRecoveryInvalid:
+		var t email.RecoveryInvalidModel
 		if err := json.Unmarshal(msg.TemplateData, &t); err != nil {
 			return nil, err
 		}
-		return template.NewRecoveryInvalid(c, &t), nil
-	case TypeRecoveryValid:
-		var t template.RecoveryValidModel
+		return email.NewRecoveryInvalid(d, &t), nil
+	case template.TypeRecoveryValid:
+		var t email.RecoveryValidModel
 		if err := json.Unmarshal(msg.TemplateData, &t); err != nil {
 			return nil, err
 		}
-		return template.NewRecoveryValid(c, &t), nil
-	case TypeVerificationInvalid:
-		var t template.VerificationInvalidModel
+		return email.NewRecoveryValid(d, &t), nil
+	case template.TypeRecoveryCodeInvalid:
+		var t email.RecoveryCodeInvalidModel
 		if err := json.Unmarshal(msg.TemplateData, &t); err != nil {
 			return nil, err
 		}
-		return template.NewVerificationInvalid(c, &t), nil
-	case TypeVerificationValid:
-		var t template.VerificationValidModel
+		return email.NewRecoveryCodeInvalid(d, &t), nil
+	case template.TypeRecoveryCodeValid:
+		var t email.RecoveryCodeValidModel
 		if err := json.Unmarshal(msg.TemplateData, &t); err != nil {
 			return nil, err
 		}
-		return template.NewVerificationValid(c, &t), nil
-	case TypeTestStub:
-		var t template.TestStubModel
+		return email.NewRecoveryCodeValid(d, &t), nil
+	case template.TypeVerificationInvalid:
+		var t email.VerificationInvalidModel
 		if err := json.Unmarshal(msg.TemplateData, &t); err != nil {
 			return nil, err
 		}
-		return template.NewTestStub(c, &t), nil
+		return email.NewVerificationInvalid(d, &t), nil
+	case template.TypeVerificationValid:
+		var t email.VerificationValidModel
+		if err := json.Unmarshal(msg.TemplateData, &t); err != nil {
+			return nil, err
+		}
+		return email.NewVerificationValid(d, &t), nil
+	case template.TypeVerificationCodeInvalid:
+		var t email.VerificationCodeInvalidModel
+		if err := json.Unmarshal(msg.TemplateData, &t); err != nil {
+			return nil, err
+		}
+		return email.NewVerificationCodeInvalid(d, &t), nil
+	case template.TypeVerificationCodeValid:
+		var t email.VerificationCodeValidModel
+		if err := json.Unmarshal(msg.TemplateData, &t); err != nil {
+			return nil, err
+		}
+		return email.NewVerificationCodeValid(d, &t), nil
+	case template.TypeTestStub:
+		var t email.TestStubModel
+		if err := json.Unmarshal(msg.TemplateData, &t); err != nil {
+			return nil, err
+		}
+		return email.NewTestStub(d, &t), nil
+	case template.TypeLoginCodeValid:
+		var t email.LoginCodeValidModel
+		if err := json.Unmarshal(msg.TemplateData, &t); err != nil {
+			return nil, err
+		}
+		return email.NewLoginCodeValid(d, &t), nil
+	case template.TypeRegistrationCodeValid:
+		var t email.RegistrationCodeValidModel
+		if err := json.Unmarshal(msg.TemplateData, &t); err != nil {
+			return nil, err
+		}
+		return email.NewRegistrationCodeValid(d, &t), nil
 	default:
 		return nil, errors.Errorf("received unexpected message template type: %s", msg.TemplateType)
 	}

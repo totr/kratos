@@ -1,3 +1,6 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package settings
 
 import (
@@ -7,6 +10,8 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/gobuffalo/pop/v6"
+
 	"github.com/ory/kratos/text"
 
 	"github.com/tidwall/gjson"
@@ -14,8 +19,6 @@ import (
 	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/ui/container"
 	"github.com/ory/x/urlx"
-
-	"github.com/ory/kratos/corp"
 
 	"github.com/gofrs/uuid"
 	"github.com/pkg/errors"
@@ -37,7 +40,7 @@ import (
 //
 // We recommend reading the [User Settings Documentation](../self-service/flows/user-settings)
 //
-// swagger:model selfServiceSettingsFlow
+// swagger:model settingsFlow
 type Flow struct {
 	// ID represents the flow's unique ID. When performing the settings flow, this
 	// represents the id in the settings ui's query parameter: http://<selfservice.flows.settings.ui_url>?flow=<id>
@@ -48,6 +51,8 @@ type Flow struct {
 	ID uuid.UUID `json:"id" db:"id" faker:"-"`
 
 	// Type represents the flow's type which can be either "api" or "browser", depending on the flow interaction.
+	//
+	// required: true
 	Type flow.Type `json:"type" db:"type" faker:"flow_type"`
 
 	// ExpiresAt is the time (UTC) when the flow expires. If the user still wishes to update the setting,
@@ -105,8 +110,23 @@ type Flow struct {
 	CreatedAt time.Time `json:"-" faker:"-" db:"created_at"`
 	// UpdatedAt is a helper struct field for gobuffalo.pop.
 	UpdatedAt time.Time `json:"-" faker:"-" db:"updated_at"`
-	NID       uuid.UUID `json:"-"  faker:"-" db:"nid"`
+	NID       uuid.UUID `json:"-" faker:"-" db:"nid"`
+
+	// Contains a list of actions, that could follow this flow
+	//
+	// It can, for example, contain a reference to the verification flow, created as part of the user's
+	// registration.
+	//
+	// required: false
+	ContinueWithItems []flow.ContinueWith `json:"continue_with,omitempty" db:"-" faker:"-" `
+
+	// TransientPayload is used to pass data from the settings flow to hooks and email templates
+	//
+	// required: false
+	TransientPayload json.RawMessage `json:"transient_payload,omitempty" faker:"-" db:"-"`
 }
+
+var _ flow.Flow = new(Flow)
 
 func MustNewFlow(conf *config.Config, exp time.Duration, r *http.Request, i *identity.Identity, ft flow.Type) *Flow {
 	f, err := NewFlow(conf, exp, r, i, ft)
@@ -123,10 +143,10 @@ func NewFlow(conf *config.Config, exp time.Duration, r *http.Request, i *identit
 	// Pre-validate the return to URL which is contained in the HTTP request.
 	requestURL := x.RequestURL(r).String()
 	_, err := x.SecureRedirectTo(r,
-		conf.SelfServiceBrowserDefaultReturnTo(),
+		conf.SelfServiceBrowserDefaultReturnTo(r.Context()),
 		x.SecureRedirectUseSourceURL(requestURL),
-		x.SecureRedirectAllowURLs(conf.SelfServiceBrowserWhitelistedReturnToDomains()),
-		x.SecureRedirectAllowSelfServiceURLs(conf.SelfPublicURL(r)),
+		x.SecureRedirectAllowURLs(conf.SelfServiceBrowserAllowedReturnToDomains(r.Context())),
+		x.SecureRedirectAllowSelfServiceURLs(conf.SelfPublicURL(r.Context())),
 	)
 	if err != nil {
 		return nil, err
@@ -140,10 +160,10 @@ func NewFlow(conf *config.Config, exp time.Duration, r *http.Request, i *identit
 		IdentityID: i.ID,
 		Identity:   i,
 		Type:       ft,
-		State:      StateShowForm,
+		State:      flow.StateShowForm,
 		UI: &container.Container{
 			Method: "POST",
-			Action: flow.AppendFlowTo(urlx.AppendPaths(conf.SelfPublicURL(r), RouteSubmitFlow), id).String(),
+			Action: flow.AppendFlowTo(urlx.AppendPaths(conf.SelfPublicURL(r.Context()), RouteSubmitFlow), id).String(),
 		},
 		InternalContext: []byte("{}"),
 	}, nil
@@ -158,7 +178,7 @@ func (f *Flow) GetRequestURL() string {
 }
 
 func (f Flow) TableName(ctx context.Context) string {
-	return corp.ContextualizeTableName(ctx, "selfservice_settings_flows")
+	return "selfservice_settings_flows"
 }
 
 func (f Flow) GetID() uuid.UUID {
@@ -179,8 +199,8 @@ func (f *Flow) Valid(s *session.Session) error {
 	}
 
 	if f.IdentityID != s.Identity.ID {
-		return errors.WithStack(herodot.ErrBadRequest.WithID(text.ErrIDInitiatedBySomeoneElse).WithReasonf(
-			"You must restart the flow because the resumable session was initiated by another person."))
+		return errors.WithStack(herodot.ErrForbidden.WithID(text.ErrIDInitiatedBySomeoneElse).WithReasonf(
+			"The request was initiated by someone else and has been blocked for security reasons. Please go back and try again."))
 	}
 
 	return nil
@@ -194,8 +214,69 @@ func (f *Flow) EnsureInternalContext() {
 
 func (f Flow) MarshalJSON() ([]byte, error) {
 	type local Flow
+	f.SetReturnTo()
+	return json.Marshal(local(f))
+}
+
+func (f *Flow) SetReturnTo() {
+	// Return to is already set, do not overwrite it.
+	if len(f.ReturnTo) > 0 {
+		return
+	}
 	if u, err := url.Parse(f.RequestURL); err == nil {
 		f.ReturnTo = u.Query().Get("return_to")
 	}
-	return json.Marshal(local(f))
+}
+
+func (f *Flow) AfterFind(*pop.Connection) error {
+	f.SetReturnTo()
+	return nil
+}
+
+func (f *Flow) AfterSave(*pop.Connection) error {
+	f.SetReturnTo()
+	return nil
+}
+
+func (f *Flow) GetUI() *container.Container {
+	return f.UI
+}
+
+func (f *Flow) AddContinueWith(c flow.ContinueWith) {
+	f.ContinueWithItems = append(f.ContinueWithItems, c)
+}
+
+func (f *Flow) ContinueWith() []flow.ContinueWith {
+	return f.ContinueWithItems
+}
+
+func (f *Flow) GetState() State {
+	return f.State
+}
+
+func (f *Flow) GetFlowName() flow.FlowName {
+	return flow.SettingsFlow
+}
+
+func (f *Flow) SetState(state State) {
+	f.State = state
+}
+
+func (t *Flow) GetTransientPayload() json.RawMessage {
+	return t.TransientPayload
+}
+
+func (f *Flow) ToLoggerField() map[string]interface{} {
+	if f == nil {
+		return map[string]interface{}{}
+	}
+	return map[string]interface{}{
+		"id":          f.ID.String(),
+		"return_to":   f.ReturnTo,
+		"request_url": f.RequestURL,
+		"active":      f.Active,
+		"Type":        f.Type,
+		"nid":         f.NID,
+		"state":       f.State,
+	}
 }

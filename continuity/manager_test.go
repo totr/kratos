@@ -1,3 +1,6 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package continuity_test
 
 import (
@@ -7,7 +10,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/ory/kratos/driver/config"
+
+	"github.com/ory/kratos/internal/testhelpers"
 
 	"github.com/ory/x/ioutilx"
 
@@ -20,7 +29,6 @@ import (
 	"github.com/ory/x/logrusx"
 
 	"github.com/ory/kratos/continuity"
-	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/identity"
 	"github.com/ory/kratos/internal"
 	"github.com/ory/kratos/x"
@@ -29,7 +37,7 @@ import (
 type persisterTestCase struct {
 	ro          []continuity.ManagerOption
 	wo          []continuity.ManagerOption
-	expected    interface{}
+	expected    *persisterTestPayload
 	expectedErr error
 }
 
@@ -38,14 +46,15 @@ type persisterTestPayload struct {
 }
 
 func TestManager(t *testing.T) {
+	ctx := context.Background()
 	conf, reg := internal.NewFastRegistryWithMocks(t)
 
-	conf.MustSet(config.ViperKeyDefaultIdentitySchemaURL, "file://../test/stub/identity/empty.schema.json")
-	conf.MustSet(config.ViperKeyPublicBaseURL, "https://www.ory.sh")
+	testhelpers.SetDefaultIdentitySchema(conf, "file://../test/stub/identity/empty.schema.json")
+	conf.MustSet(ctx, config.ViperKeyPublicBaseURL, "https://www.ory.sh")
 	i := identity.NewIdentity("")
 	require.NoError(t, reg.PrivilegedIdentityPool().CreateIdentity(context.Background(), i))
 
-	var newServer = func(t *testing.T, p continuity.Manager, tc *persisterTestCase) *httptest.Server {
+	newServer := func(t *testing.T, p continuity.Manager, tc *persisterTestCase) *httptest.Server {
 		writer := herodot.NewJSONWriter(logrusx.New("", ""))
 		router := httprouter.New()
 		router.PUT("/:name", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
@@ -95,125 +104,237 @@ func TestManager(t *testing.T) {
 		return ts
 	}
 
-	var newClient = func() *http.Client {
-		return &http.Client{Jar: x.EasyCookieJar(t, nil)}
+	newClient := func() *http.Client {
+		return &http.Client{Jar: testhelpers.EasyCookieJar(t, nil)}
 	}
 
-	for name, p := range map[string]continuity.Manager{
-		"cookie": reg.ContinuityManager(),
+	p := reg.ContinuityManager()
+	cl := newClient()
+
+	t.Run("case=continue cookie resets when signature is invalid", func(t *testing.T) {
+		ts := newServer(t, p, new(persisterTestCase))
+		href := ts.URL + "/" + x.NewUUID().String()
+
+		res, err := cl.Do(testhelpers.NewTestHTTPRequest(t, "PUT", href, nil))
+		require.NoError(t, err)
+		require.NoError(t, res.Body.Close())
+		require.Equal(t, http.StatusNoContent, res.StatusCode)
+
+		req := testhelpers.NewTestHTTPRequest(t, "GET", href, nil)
+		require.Len(t, res.Cookies(), 1)
+		for _, c := range res.Cookies() {
+			// Change something in the string
+			c.Value = strings.Replace(c.Value, "a", "b", 1)
+			req.AddCookie(c)
+		}
+		res, err = http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, res.Body.Close()) })
+
+		require.Equal(t, http.StatusBadRequest, res.StatusCode)
+		body := ioutilx.MustReadAll(res.Body)
+		assert.Contains(t, gjson.GetBytes(body, "error.reason").String(), continuity.ErrNotResumable.ReasonField)
+
+		require.Len(t, res.Cookies(), 1, "continuing the flow with a broken cookie should instruct the browser to forget it")
+		assert.EqualValues(t, res.Cookies()[0].Name, continuity.CookieName)
+	})
+
+	t.Run("case=can deal with duplicate cookies", func(t *testing.T) {
+		tc := &persisterTestCase{expected: &persisterTestPayload{"bar"}}
+		ts := newServer(t, p, tc)
+		href := ts.URL + "/" + x.NewUUID().String()
+
+		res, err := http.DefaultClient.Do(testhelpers.NewTestHTTPRequest(t, "PUT", href, nil))
+		require.NoError(t, err)
+		require.NoError(t, res.Body.Close())
+		require.Equal(t, http.StatusNoContent, res.StatusCode)
+
+		// We change the key to another one
+		href = ts.URL + "/" + x.NewUUID().String()
+		req := testhelpers.NewTestHTTPRequest(t, "GET", href, nil)
+		require.Len(t, res.Cookies(), 1)
+		for _, c := range res.Cookies() {
+			req.AddCookie(c)
+		}
+
+		tc.ro = []continuity.ManagerOption{continuity.WithPayload(&persisterTestPayload{"bar"})}
+		res, err = http.DefaultClient.Do(testhelpers.NewTestHTTPRequest(t, "PUT", href, nil))
+		require.NoError(t, err)
+		require.NoError(t, res.Body.Close())
+		require.Equal(t, http.StatusNoContent, res.StatusCode)
+
+		require.Len(t, res.Cookies(), 1)
+		for _, c := range res.Cookies() {
+			req.AddCookie(c)
+		}
+
+		res, err = http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, res.Body.Close()) })
+
+		require.Len(t, res.Cookies(), 1, "continuing the flow with a broken cookie should instruct the browser to forget it")
+		assert.EqualValues(t, res.Cookies()[0].Name, continuity.CookieName)
+
+		var b bytes.Buffer
+		require.NoError(t, json.NewEncoder(&b).Encode(tc.expected))
+		body := ioutilx.MustReadAll(res.Body)
+		assert.JSONEq(t, b.String(), gjson.GetBytes(body, "payload").Raw, "%s", body)
+		assert.Contains(t, href, gjson.GetBytes(body, "name").String(), "%s", body)
+	})
+
+	t.Run("case=pause and use session with expiry", func(t *testing.T) {
+		cl := newClient()
+
+		tc := &persisterTestCase{
+			ro: []continuity.ManagerOption{continuity.WithPayload(&persisterTestPayload{"bar"}), continuity.WithExpireInsteadOfDelete(time.Minute)},
+			wo: []continuity.ManagerOption{continuity.WithPayload(&persisterTestPayload{}), continuity.WithExpireInsteadOfDelete(time.Minute)},
+		}
+		ts := newServer(t, p, tc)
+		genid := func() string {
+			return ts.URL + "/" + x.NewUUID().String()
+		}
+
+		href := genid()
+		res, err := cl.Do(testhelpers.NewTestHTTPRequest(t, "PUT", href, nil))
+		require.NoError(t, err)
+		require.NoError(t, res.Body.Close())
+		require.Equal(t, http.StatusNoContent, res.StatusCode)
+
+		res, err = cl.Do(testhelpers.NewTestHTTPRequest(t, "GET", href, nil))
+		require.NoError(t, err)
+		require.NoError(t, res.Body.Close())
+		require.Equal(t, http.StatusOK, res.StatusCode)
+
+		res, err = cl.Do(testhelpers.NewTestHTTPRequest(t, "GET", href, nil))
+		require.NoError(t, err)
+		require.NoError(t, res.Body.Close())
+		require.Equal(t, http.StatusOK, res.StatusCode)
+
+		tc.ro = []continuity.ManagerOption{continuity.WithPayload(&persisterTestPayload{"bar"}), continuity.WithExpireInsteadOfDelete(-time.Minute)}
+		tc.wo = []continuity.ManagerOption{continuity.WithPayload(&persisterTestPayload{""}), continuity.WithExpireInsteadOfDelete(-time.Minute)}
+
+		res, err = cl.Do(testhelpers.NewTestHTTPRequest(t, "GET", href, nil))
+		require.NoError(t, err)
+		require.NoError(t, res.Body.Close())
+		require.Equal(t, http.StatusOK, res.StatusCode)
+
+		res, err = cl.Do(testhelpers.NewTestHTTPRequest(t, "GET", href, nil))
+		require.NoError(t, err)
+		require.Equal(t, http.StatusBadRequest, res.StatusCode)
+		body := ioutilx.MustReadAll(res.Body)
+		require.NoError(t, res.Body.Close())
+		assert.Contains(t, gjson.GetBytes(body, "error.reason").String(), continuity.ErrNotResumable.ReasonField)
+	})
+
+	for k, tc := range []persisterTestCase{
+		{},
+		{
+			ro:       []continuity.ManagerOption{continuity.WithPayload(&persisterTestPayload{"bar"})},
+			wo:       []continuity.ManagerOption{continuity.WithPayload(&persisterTestPayload{})},
+			expected: &persisterTestPayload{"bar"},
+		},
+		{
+			ro: []continuity.ManagerOption{continuity.WithIdentity(i)},
+			wo: []continuity.ManagerOption{continuity.WithIdentity(i)},
+		},
 	} {
-		t.Run(fmt.Sprintf("persister=%s", name), func(t *testing.T) {
-			for k, tc := range []persisterTestCase{
-				{},
-				{
-					ro:       []continuity.ManagerOption{continuity.WithPayload(&persisterTestPayload{"bar"})},
-					wo:       []continuity.ManagerOption{continuity.WithPayload(&persisterTestPayload{})},
-					expected: &persisterTestPayload{"bar"},
-				},
-				{
-					ro: []continuity.ManagerOption{continuity.WithIdentity(i)},
-					wo: []continuity.ManagerOption{continuity.WithIdentity(i)},
-				},
-			} {
-				t.Run(fmt.Sprintf("case=%d", k), func(t *testing.T) {
-					cl := newClient()
-					ts := newServer(t, p, &tc)
-					var genid = func() string {
-						return ts.URL + "/" + x.NewUUID().String()
-					}
-
-					t.Run("case=resume non-existing session", func(t *testing.T) {
-						href := genid()
-						res, err := cl.Do(x.NewTestHTTPRequest(t, "GET", href, nil))
-						require.NoError(t, err)
-						t.Cleanup(func() { require.NoError(t, res.Body.Close()) })
-
-						body := ioutilx.MustReadAll(res.Body)
-						require.Equal(t, http.StatusBadRequest, res.StatusCode)
-						assert.Contains(t, gjson.GetBytes(body, "error.reason").String(), "resumable session")
-					})
-
-					t.Run("case=pause and resume session", func(t *testing.T) {
-						href := genid()
-						res, err := cl.Do(x.NewTestHTTPRequest(t, "PUT", href, nil))
-						require.NoError(t, err)
-						require.NoError(t, res.Body.Close())
-						require.Equal(t, http.StatusNoContent, res.StatusCode)
-
-						res, err = cl.Do(x.NewTestHTTPRequest(t, "GET", href, nil))
-						require.NoError(t, err)
-						t.Cleanup(func() { require.NoError(t, res.Body.Close()) })
-
-						body := ioutilx.MustReadAll(res.Body)
-						if tc.expectedErr != nil {
-							require.Equal(t, http.StatusGone, res.StatusCode, "%s", body)
-							return
-						}
-
-						require.Equal(t, http.StatusOK, res.StatusCode, "%s", body)
-
-						var b bytes.Buffer
-						require.NoError(t, json.NewEncoder(&b).Encode(tc.expected))
-						assert.JSONEq(t, b.String(), gjson.GetBytes(body, "payload").Raw, "%s", body)
-						assert.Contains(t, href, gjson.GetBytes(body, "name").String(), "%s", body)
-					})
-
-					t.Run("case=pause and retry session", func(t *testing.T) {
-						href := genid()
-						res, err := cl.Do(x.NewTestHTTPRequest(t, "PUT", href, nil))
-						require.NoError(t, err)
-						require.NoError(t, res.Body.Close())
-						require.Equal(t, http.StatusNoContent, res.StatusCode)
-
-						res, err = cl.Do(x.NewTestHTTPRequest(t, "GET", href, nil))
-						require.NoError(t, err)
-						t.Cleanup(func() { require.NoError(t, res.Body.Close()) })
-
-						res, err = cl.Do(x.NewTestHTTPRequest(t, "GET", href, nil))
-						require.NoError(t, err)
-						require.Equal(t, http.StatusBadRequest, res.StatusCode)
-						body := ioutilx.MustReadAll(res.Body)
-						t.Cleanup(func() { require.NoError(t, res.Body.Close()) })
-						assert.Contains(t, gjson.GetBytes(body, "error.reason").String(), "resumable session")
-					})
-
-					t.Run("case=pause and resume session in the same request", func(t *testing.T) {
-						href := genid()
-						res, err := cl.Do(x.NewTestHTTPRequest(t, "POST", href, nil))
-						require.NoError(t, err)
-						require.Equal(t, http.StatusOK, res.StatusCode)
-						t.Cleanup(func() { require.NoError(t, res.Body.Close()) })
-
-						var b bytes.Buffer
-						require.NoError(t, json.NewEncoder(&b).Encode(tc.expected))
-
-						body := ioutilx.MustReadAll(res.Body)
-						assert.JSONEq(t, b.String(), gjson.GetBytes(body, "payload").Raw, "%s", body)
-						assert.Contains(t, href, gjson.GetBytes(body, "name").String(), "%s", body)
-					})
-
-					t.Run("case=pause, abort, and continue session with failure", func(t *testing.T) {
-						href := genid()
-						res, err := cl.Do(x.NewTestHTTPRequest(t, "PUT", href, nil))
-						require.NoError(t, err)
-						require.NoError(t, res.Body.Close())
-						require.Equal(t, http.StatusNoContent, res.StatusCode)
-
-						res, err = cl.Do(x.NewTestHTTPRequest(t, "DELETE", href, nil))
-						require.NoError(t, err)
-						t.Cleanup(func() { require.NoError(t, res.Body.Close()) })
-						require.Equal(t, http.StatusNoContent, res.StatusCode)
-
-						res, err = cl.Do(x.NewTestHTTPRequest(t, "GET", href, nil))
-						require.NoError(t, err)
-						t.Cleanup(func() { require.NoError(t, res.Body.Close()) })
-
-						require.Equal(t, http.StatusBadRequest, res.StatusCode)
-						body := ioutilx.MustReadAll(res.Body)
-						assert.Contains(t, gjson.GetBytes(body, "error.reason").String(), "resumable session")
-					})
-				})
+		t.Run(fmt.Sprintf("case=%d", k), func(t *testing.T) {
+			cl := newClient()
+			ts := newServer(t, p, &tc)
+			genid := func() string {
+				return ts.URL + "/" + x.NewUUID().String()
 			}
+
+			t.Run("case=resume non-existing session", func(t *testing.T) {
+				href := genid()
+				res, err := cl.Do(testhelpers.NewTestHTTPRequest(t, "GET", href, nil))
+				require.NoError(t, err)
+				t.Cleanup(func() { require.NoError(t, res.Body.Close()) })
+
+				body := ioutilx.MustReadAll(res.Body)
+				require.Equal(t, http.StatusBadRequest, res.StatusCode)
+				assert.Contains(t, gjson.GetBytes(body, "error.reason").String(), continuity.ErrNotResumable.ReasonField)
+			})
+
+			t.Run("case=pause and resume session", func(t *testing.T) {
+				href := genid()
+				res, err := cl.Do(testhelpers.NewTestHTTPRequest(t, "PUT", href, nil))
+				require.NoError(t, err)
+				require.NoError(t, res.Body.Close())
+				require.Equal(t, http.StatusNoContent, res.StatusCode)
+
+				res, err = cl.Do(testhelpers.NewTestHTTPRequest(t, "GET", href, nil))
+				require.NoError(t, err)
+				t.Cleanup(func() { require.NoError(t, res.Body.Close()) })
+
+				body := ioutilx.MustReadAll(res.Body)
+				if tc.expectedErr != nil {
+					require.Equal(t, http.StatusGone, res.StatusCode, "%s", body)
+					return
+				}
+
+				require.Equal(t, http.StatusOK, res.StatusCode, "%s", body)
+
+				var b bytes.Buffer
+				require.NoError(t, json.NewEncoder(&b).Encode(tc.expected))
+				assert.JSONEq(t, b.String(), gjson.GetBytes(body, "payload").Raw, "%s", body)
+				assert.Contains(t, href, gjson.GetBytes(body, "name").String(), "%s", body)
+			})
+
+			t.Run("case=pause and retry session", func(t *testing.T) {
+				href := genid()
+				res, err := cl.Do(testhelpers.NewTestHTTPRequest(t, "PUT", href, nil))
+				require.NoError(t, err)
+				require.NoError(t, res.Body.Close())
+				require.Equal(t, http.StatusNoContent, res.StatusCode)
+
+				res, err = cl.Do(testhelpers.NewTestHTTPRequest(t, "GET", href, nil))
+				require.NoError(t, err)
+				t.Cleanup(func() { require.NoError(t, res.Body.Close()) })
+
+				res, err = cl.Do(testhelpers.NewTestHTTPRequest(t, "GET", href, nil))
+				require.NoError(t, err)
+				require.Equal(t, http.StatusBadRequest, res.StatusCode)
+				body := ioutilx.MustReadAll(res.Body)
+				t.Cleanup(func() { require.NoError(t, res.Body.Close()) })
+				assert.Contains(t, gjson.GetBytes(body, "error.reason").String(), continuity.ErrNotResumable.ReasonField)
+			})
+
+			t.Run("case=pause and resume session in the same request", func(t *testing.T) {
+				href := genid()
+				res, err := cl.Do(testhelpers.NewTestHTTPRequest(t, "POST", href, nil))
+				require.NoError(t, err)
+				require.Equal(t, http.StatusOK, res.StatusCode)
+				t.Cleanup(func() { require.NoError(t, res.Body.Close()) })
+
+				var b bytes.Buffer
+				require.NoError(t, json.NewEncoder(&b).Encode(tc.expected))
+
+				body := ioutilx.MustReadAll(res.Body)
+				assert.JSONEq(t, b.String(), gjson.GetBytes(body, "payload").Raw, "%s", body)
+				assert.Contains(t, href, gjson.GetBytes(body, "name").String(), "%s", body)
+			})
+
+			t.Run("case=pause, abort, and continue session with failure", func(t *testing.T) {
+				href := genid()
+				res, err := cl.Do(testhelpers.NewTestHTTPRequest(t, "PUT", href, nil))
+				require.NoError(t, err)
+				require.NoError(t, res.Body.Close())
+				require.Equal(t, http.StatusNoContent, res.StatusCode)
+
+				res, err = cl.Do(testhelpers.NewTestHTTPRequest(t, "DELETE", href, nil))
+				require.NoError(t, err)
+				t.Cleanup(func() { require.NoError(t, res.Body.Close()) })
+				require.Equal(t, http.StatusNoContent, res.StatusCode)
+
+				res, err = cl.Do(testhelpers.NewTestHTTPRequest(t, "GET", href, nil))
+				require.NoError(t, err)
+				t.Cleanup(func() { require.NoError(t, res.Body.Close()) })
+
+				require.Equal(t, http.StatusBadRequest, res.StatusCode)
+				body := ioutilx.MustReadAll(res.Body)
+				assert.Contains(t, gjson.GetBytes(body, "error.reason").String(), continuity.ErrNotResumable.ReasonField)
+			})
 		})
 	}
 }

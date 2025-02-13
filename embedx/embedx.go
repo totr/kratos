@@ -1,14 +1,17 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package embedx
 
 import (
 	"bytes"
+	_ "embed"
 	"io"
 
 	"github.com/pkg/errors"
-
 	"github.com/tidwall/gjson"
 
-	_ "embed"
+	"github.com/ory/x/otelx"
 )
 
 //go:embed config.schema.json
@@ -85,6 +88,10 @@ func AddSchemaResources(c interface {
 	}
 
 	if err := addSchemaResources(c, sc); err != nil {
+		return err
+	}
+
+	if err := otelx.AddConfigSchema(c); err != nil {
 		return err
 	}
 

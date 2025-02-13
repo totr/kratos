@@ -9,11 +9,13 @@ serve:
 
 selfservice:
   default_browser_return_url: http://127.0.0.1:4455/
-  whitelisted_return_urls:
+  allowed_return_urls:
     - http://127.0.0.1:4455
 
   methods:
     password:
+      enabled: true
+    link:
       enabled: true
 
   flows:
@@ -27,10 +29,12 @@ selfservice:
     recovery:
       enabled: true
       ui_url: http://127.0.0.1:4455/recovery
+      use: link
 
     verification:
       enabled: true
       ui_url: http://127.0.0.1:4455/verify
+      use: link
       after:
         default_browser_return_url: http://127.0.0.1:4455/
 
@@ -48,8 +52,7 @@ selfservice:
       after:
         password:
           hooks:
-            -
-              hook: session
+            - hook: session
 
 log:
   level: debug
@@ -74,7 +77,10 @@ hashers:
     key_length: 16
 
 identity:
-  default_schema_url: file://../../pkg/stub/identity.schema.json
+  default_schema_id: default
+  schemas:
+    - id: default
+      url: file://../../pkg/stub/identity.schema.json
 
 courier:
   smtp:

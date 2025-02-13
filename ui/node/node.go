@@ -1,7 +1,11 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package node
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -16,33 +20,43 @@ import (
 	"github.com/ory/x/stringslice"
 )
 
-// swagger:model uiNodeType
-type Type string
-
-// swagger:model uiNodeGroup
-type Group string
-
-func (g Group) String() string {
-	return string(g)
-}
+// swagger:enum UiNodeType
+type UiNodeType string
 
 const (
-	DefaultGroup          Group = "default"
-	PasswordGroup         Group = "password"
-	OpenIDConnectGroup    Group = "oidc"
-	ProfileGroup          Group = "profile"
-	RecoveryLinkGroup     Group = "link"
-	VerificationLinkGroup Group = "link"
-	TOTPGroup             Group = "totp"
-	LookupGroup           Group = "lookup_secret"
-	WebAuthnGroup         Group = "webauthn"
-
-	Text   Type = "text"
-	Input  Type = "input"
-	Image  Type = "img"
-	Anchor Type = "a"
-	Script Type = "script"
+	Text   UiNodeType = "text"
+	Input  UiNodeType = "input"
+	Image  UiNodeType = "img"
+	Anchor UiNodeType = "a"
+	Script UiNodeType = "script"
 )
+
+func (t UiNodeType) String() string {
+	return string(t)
+}
+
+// swagger:enum UiNodeGroup
+type UiNodeGroup string
+
+const (
+	DefaultGroup         UiNodeGroup = "default"
+	PasswordGroup        UiNodeGroup = "password"
+	OpenIDConnectGroup   UiNodeGroup = "oidc"
+	ProfileGroup         UiNodeGroup = "profile"
+	LinkGroup            UiNodeGroup = "link"
+	CodeGroup            UiNodeGroup = "code"
+	TOTPGroup            UiNodeGroup = "totp"
+	LookupGroup          UiNodeGroup = "lookup_secret"
+	WebAuthnGroup        UiNodeGroup = "webauthn"
+	PasskeyGroup         UiNodeGroup = "passkey"
+	IdentifierFirstGroup UiNodeGroup = "identifier_first"
+	CaptchaGroup         UiNodeGroup = "captcha" // Available in OEL
+	SAMLGroup            UiNodeGroup = "saml"    // Available in OEL
+)
+
+func (g UiNodeGroup) String() string {
+	return string(g)
+}
 
 // swagger:model uiNodes
 type Nodes []*Node
@@ -56,15 +70,13 @@ type Nodes []*Node
 type Node struct {
 	// The node's type
 	//
-	// Can be one of: text, input, img, a
-	//
 	// required: true
-	Type Type `json:"type" faker:"-"`
+	Type UiNodeType `json:"type" faker:"-"`
 
 	// Group specifies which group (e.g. password authenticator) this node belongs to.
 	//
 	// required: true
-	Group Group `json:"group"`
+	Group UiNodeGroup `json:"group"`
 
 	// The node's attributes.
 	//
@@ -105,8 +117,8 @@ type Meta struct {
 
 // Used for en/decoding the Attributes field.
 type jsonRawNode struct {
-	Type       Type          `json:"type"`
-	Group      Group         `json:"group"`
+	Type       UiNodeType    `json:"type"`
+	Group      UiNodeGroup   `json:"group"`
 	Attributes Attributes    `json:"attributes"`
 	Messages   text.Messages `json:"messages"`
 	Meta       *Meta         `json:"meta"`
@@ -189,7 +201,7 @@ type sortOptions struct {
 
 type SortOption func(*sortOptions)
 
-func SortByGroups(orderByGroups []Group) func(*sortOptions) {
+func SortByGroups(orderByGroups []UiNodeGroup) func(*sortOptions) {
 	return func(options *sortOptions) {
 		options.orderByGroups = make([]string, len(orderByGroups))
 		for k := range orderByGroups {
@@ -209,6 +221,7 @@ func SortUseOrder(keysInOrder []string) func(*sortOptions) {
 		options.keysInOrder = keysInOrder
 	}
 }
+
 func SortUseOrderAppend(keysInOrder []string) func(*sortOptions) {
 	return func(options *sortOptions) {
 		options.keysInOrderAppend = keysInOrder
@@ -221,14 +234,14 @@ func SortUpdateOrder(f func([]string) []string) func(*sortOptions) {
 	}
 }
 
-func (n Nodes) SortBySchema(opts ...SortOption) error {
+func (n Nodes) SortBySchema(ctx context.Context, opts ...SortOption) error {
 	var o sortOptions
 	for _, f := range opts {
 		f(&o)
 	}
 
 	if o.schemaRef != "" {
-		schemaKeys, err := schema.GetKeysInOrder(o.schemaRef)
+		schemaKeys, err := schema.GetKeysInOrder(ctx, o.schemaRef)
 		if err != nil {
 			return err
 		}
@@ -344,9 +357,40 @@ func (n *Nodes) Append(node *Node) {
 	*n = append(*n, node)
 }
 
+func (n *Nodes) RemoveMatching(node *Node) {
+	if n == nil {
+		return
+	}
+
+	var r Nodes
+	for k, v := range *n {
+		if !(*n)[k].Matches(node) {
+			r = append(r, v)
+		}
+	}
+
+	*n = r
+}
+
+func (n *Node) Matches(needle *Node) bool {
+	if len(needle.ID()) > 0 && n.ID() != needle.ID() {
+		return false
+	}
+
+	if needle.Type != "" && n.Type != needle.Type {
+		return false
+	}
+
+	if needle.Group != "" && n.Group != needle.Group {
+		return false
+	}
+
+	return n.Attributes.Matches(needle.Attributes)
+}
+
 func (n *Node) UnmarshalJSON(data []byte) error {
 	var attr Attributes
-	switch t := gjson.GetBytes(data, "type").String(); Type(t) {
+	switch t := gjson.GetBytes(data, "type").String(); UiNodeType(t) {
 	case Text:
 		attr = &TextAttributes{
 			NodeType: Text,
@@ -387,7 +431,7 @@ func (n *Node) UnmarshalJSON(data []byte) error {
 }
 
 func (n *Node) MarshalJSON() ([]byte, error) {
-	var t Type
+	var t UiNodeType
 	if n.Attributes != nil {
 		switch attr := n.Attributes.(type) {
 		case *TextAttributes:

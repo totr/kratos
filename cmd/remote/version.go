@@ -1,3 +1,6 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package remote
 
 import (
@@ -27,12 +30,18 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print the version of an Ory Kratos instance",
 	Args:  cobra.NoArgs,
-	Run: func(cmd *cobra.Command, args []string) {
-		c := cliclient.NewClient(cmd)
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c, err := cliclient.NewClient(cmd)
+		if err != nil {
+			return err
+		}
 
-		resp, _, err := c.MetadataApi.GetVersion(cmd.Context()).Execute()
-		cmdx.Must(err, "Could not get version: %s", err)
+		resp, _, err := c.MetadataAPI.GetVersion(cmd.Context()).Execute()
+		if err != nil {
+			return err
+		}
 
 		cmdx.PrintRow(cmd, &versionValue{Version: resp.Version})
+		return nil
 	},
 }

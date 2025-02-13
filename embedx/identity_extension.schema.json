@@ -21,12 +21,43 @@
                     }
                   }
                 },
+                "webauthn": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "identifier": {
+                      "type": "boolean"
+                    }
+                  }
+                },
+                "passkey": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "display_name": {
+                      "type": "boolean"
+                    }
+                  }
+                },
                 "totp": {
                   "type": "object",
                   "additionalProperties": false,
                   "properties": {
                     "account_name": {
                       "type": "boolean"
+                    }
+                  }
+                },
+                "code": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "identifier": {
+                      "type": "boolean"
+                    },
+                    "via": {
+                      "type": "string",
+                      "enum": ["email", "sms"]
                     }
                   }
                 }
@@ -38,9 +69,7 @@
               "properties": {
                 "via": {
                   "type": "string",
-                  "enum": [
-                    "email"
-                  ]
+                  "enum": ["email", "sms"]
                 }
               }
             },
@@ -50,9 +79,7 @@
               "properties": {
                 "via": {
                   "type": "string",
-                  "enum": [
-                    "email"
-                  ]
+                  "enum": ["email"]
                 }
               }
             }

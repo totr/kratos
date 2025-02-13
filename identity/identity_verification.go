@@ -1,10 +1,12 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package identity
 
 import (
 	"context"
+	"fmt"
 	"time"
-
-	"github.com/ory/kratos/corp"
 
 	"github.com/gofrs/uuid"
 
@@ -22,7 +24,7 @@ const (
 // VerifiableAddressType must not exceed 16 characters as that is the limitation in the SQL Schema
 //
 // swagger:model identityVerifiableAddressType
-type VerifiableAddressType string
+type VerifiableAddressType = string
 
 // VerifiableAddressStatus must not exceed 16 characters as that is the limitation in the SQL Schema
 //
@@ -35,7 +37,6 @@ type VerifiableAddressStatus string
 type VerifiableAddress struct {
 	// The ID
 	//
-	// required: true
 	ID uuid.UUID `json:"id" db:"id" faker:"-"`
 
 	// The address value
@@ -52,14 +53,14 @@ type VerifiableAddress struct {
 
 	// The delivery method
 	//
-	// enum: ["email"]
+	// enum: email,sms
 	// example: email
 	// required: true
-	Via VerifiableAddressType `json:"via" db:"via"`
+	Via string `json:"via" db:"via"`
 
 	// The verified address status
 	//
-	// enum: ["pending","sent","completed"]
+	// enum: pending,sent,completed
 	// example: sent
 	// required: true
 	Status VerifiableAddressStatus `json:"status" db:"status"`
@@ -82,28 +83,23 @@ type VerifiableAddress struct {
 
 	// IdentityID is a helper struct field for gobuffalo.pop.
 	IdentityID uuid.UUID `json:"-" faker:"-" db:"identity_id"`
-	// CreatedAt is a helper struct field for gobuffalo.pop.
-	NID uuid.UUID `json:"-"  faker:"-" db:"nid"`
-}
-
-func (v VerifiableAddressType) HTMLFormInputType() string {
-	switch v {
-	case VerifiableAddressTypeEmail:
-		return "email"
-	}
-	return ""
+	NID        uuid.UUID `json:"-"  faker:"-" db:"nid"`
 }
 
 func (a VerifiableAddress) TableName(ctx context.Context) string {
-	return corp.ContextualizeTableName(ctx, "identity_verifiable_addresses")
+	return "identity_verifiable_addresses"
 }
 
 func NewVerifiableEmailAddress(value string, identity uuid.UUID) *VerifiableAddress {
+	return NewVerifiableAddress(value, identity, VerifiableAddressTypeEmail)
+}
+
+func NewVerifiableAddress(value string, identity uuid.UUID, channel string) *VerifiableAddress {
 	return &VerifiableAddress{
 		Value:      value,
 		Verified:   false,
 		Status:     VerifiableAddressStatusPending,
-		Via:        VerifiableAddressTypeEmail,
+		Via:        channel,
 		IdentityID: identity,
 	}
 }
@@ -118,4 +114,9 @@ func (a VerifiableAddress) GetNID() uuid.UUID {
 
 func (a VerifiableAddress) ValidateNID() error {
 	return nil
+}
+
+// Hash returns a unique string representation for the recovery address.
+func (a VerifiableAddress) Hash() string {
+	return fmt.Sprintf("%v|%v|%v|%v|%v|%v|%v", a.Value, a.Verified, a.Via, a.Status, a.VerifiedAt, a.IdentityID, a.NID)
 }

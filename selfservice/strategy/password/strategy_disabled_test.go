@@ -1,7 +1,11 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package password_test
 
 import (
-	"io/ioutil"
+	"context"
+	"io"
 	"net/http"
 	"net/url"
 	"testing"
@@ -11,7 +15,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/identity"
 	"github.com/ory/kratos/internal"
 )
@@ -19,7 +22,7 @@ import (
 func TestDisabledEndpoint(t *testing.T) {
 	conf, reg := internal.NewFastRegistryWithMocks(t)
 	testhelpers.StrategyEnable(t, conf, identity.CredentialsTypePassword.String(), false)
-	conf.MustSet(config.ViperKeyDefaultIdentitySchemaURL, "file://stub/sort.schema.json")
+	testhelpers.SetDefaultIdentitySchema(conf, "file://stub/sort.schema.json")
 
 	publicTS, _ := testhelpers.NewKratosServer(t, reg)
 
@@ -29,10 +32,11 @@ func TestDisabledEndpoint(t *testing.T) {
 
 		res, err := c.PostForm(f.Ui.Action, url.Values{"method": {"password"}, "password_identifier": []string{"identifier"}, "password": []string{"password"}})
 		require.NoError(t, err)
+		defer res.Body.Close()
 		assert.Equal(t, http.StatusNotFound, res.StatusCode)
 
-		defer res.Body.Close()
-		b, err := ioutil.ReadAll(res.Body)
+		b, err := io.ReadAll(res.Body)
+		require.NoError(t, err)
 		assert.Contains(t, string(b), "This endpoint was disabled by system administrator", "%s", b)
 	})
 
@@ -41,16 +45,17 @@ func TestDisabledEndpoint(t *testing.T) {
 
 		res, err := c.PostForm(f.Ui.Action, url.Values{"method": {"password"}, "password_identifier": []string{"identifier"}, "password": []string{"password"}})
 		require.NoError(t, err)
+		defer res.Body.Close()
 		assert.Equal(t, http.StatusNotFound, res.StatusCode)
 
-		defer res.Body.Close()
-		b, err := ioutil.ReadAll(res.Body)
+		b, err := io.ReadAll(res.Body)
+		require.NoError(t, err)
 		assert.Contains(t, string(b), "This endpoint was disabled by system administrator", "%s", b)
 	})
 
 	t.Run("case=should not settings when password method is disabled", func(t *testing.T) {
-		require.NoError(t, conf.Set(config.ViperKeyDefaultIdentitySchemaURL, "file://stub/login.schema.json"))
-		c := testhelpers.NewHTTPClientWithArbitrarySessionCookie(t, reg)
+		testhelpers.SetDefaultIdentitySchema(conf, "file://stub/login.schema.json")
+		c := testhelpers.NewHTTPClientWithArbitrarySessionCookie(t, context.Background(), reg)
 
 		t.Run("method=GET", func(t *testing.T) {
 			t.Skip("GET is currently not supported for this endpoint.")
@@ -63,10 +68,11 @@ func TestDisabledEndpoint(t *testing.T) {
 				"password": {"bar"},
 			})
 			require.NoError(t, err)
+			defer res.Body.Close()
 			assert.Equal(t, http.StatusNotFound, res.StatusCode)
 
-			defer res.Body.Close()
-			b, err := ioutil.ReadAll(res.Body)
+			b, err := io.ReadAll(res.Body)
+			require.NoError(t, err)
 			assert.Contains(t, string(b), "This endpoint was disabled by system administrator", "%s", b)
 		})
 	})

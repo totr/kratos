@@ -1,19 +1,14 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package password
 
-import (
-	"github.com/ory/kratos/ui/container"
-)
+import "encoding/json"
 
-// CredentialsConfig is the struct that is being used as part of the identity credentials.
-type CredentialsConfig struct {
-	// HashedPassword is a hash-representation of the password.
-	HashedPassword string `json:"hashed_password"`
-}
-
-// submitSelfServiceLoginFlowWithPasswordMethodBody is used to decode the login form payload.
+// Update Login Flow with Password Method
 //
-// swagger:model submitSelfServiceLoginFlowWithPasswordMethodBody
-type submitSelfServiceLoginFlowWithPasswordMethodBody struct {
+// swagger:model updateLoginFlowWithPasswordMethod
+type updateLoginFlowWithPasswordMethod struct {
 	// Method should be set to "password" when logging in using the identifier and password strategy.
 	//
 	// required: true
@@ -28,12 +23,16 @@ type submitSelfServiceLoginFlowWithPasswordMethodBody struct {
 	Password string `json:"password"`
 
 	// Identifier is the email or username of the user trying to log in.
+	// This field is deprecated!
+	LegacyIdentifier string `json:"password_identifier"`
+
+	// Identifier is the email or username of the user trying to log in.
 	//
 	// required: true
-	Identifier string `json:"password_identifier"`
-}
+	Identifier string `json:"identifier"`
 
-// FlowMethod contains the configuration for this selfservice strategy.
-type FlowMethod struct {
-	*container.Container
+	// Transient data to pass along to any webhooks
+	//
+	// required: false
+	TransientPayload json.RawMessage `json:"transient_payload,omitempty" form:"transient_payload"`
 }

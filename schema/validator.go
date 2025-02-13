@@ -1,7 +1,11 @@
+// Copyright © 2023 Ory Corp
+// SPDX-License-Identifier: Apache-2.0
+
 package schema
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"sync"
 
@@ -35,6 +39,7 @@ func WithExtensionRunner(e *ExtensionRunner) func(*validatorOptions) {
 }
 
 func (v *Validator) Validate(
+	ctx context.Context,
 	href string,
 	document json.RawMessage,
 	opts ...func(*validatorOptions),
@@ -45,7 +50,7 @@ func (v *Validator) Validate(
 	}
 
 	compiler := jsonschema.NewCompiler()
-	resource, err := jsonschema.LoadURL(href)
+	resource, err := jsonschema.LoadURL(ctx, href)
 	if err != nil {
 		return errors.WithStack(herodot.ErrInternalServerError.WithReasonf("Unable to parse validate JSON object against JSON schema.").WithDebugf("%s", err))
 	}
@@ -58,12 +63,17 @@ func (v *Validator) Validate(
 		return errors.WithStack(herodot.ErrInternalServerError.WithReasonf("Unable to parse validate JSON object against JSON schema.").WithDebugf("%s", err))
 	}
 
-	schema, err := compiler.Compile(href)
+	schema, err := compiler.Compile(ctx, href)
 	if err != nil {
 		return errors.WithStack(herodot.ErrInternalServerError.WithReasonf("Unable to parse validate JSON object against JSON schema.").WithDebugf("%s", err))
 	}
 
-	if err := schema.Validate(bytes.NewBuffer(document)); err != nil {
+	// we decode explicitly here, so we can handle the error, and it is not lost in the schema validation
+	dec, err := jsonschema.DecodeJSON(bytes.NewBuffer(document))
+	if err != nil {
+		return errors.WithStack(herodot.ErrBadRequest.WithReasonf("Unable to parse validate JSON object against JSON schema.").WithDebugf("%s", err))
+	}
+	if err := schema.ValidateInterface(dec); err != nil {
 		return errors.WithStack(err)
 	}
 
